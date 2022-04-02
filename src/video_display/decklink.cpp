@@ -409,6 +409,19 @@ public:
         void set_fps(double fps) {
                 m_new_fps = fps; // schedule for reinit
         }
+
+        double scaleBufferDelta(int delta) {
+                // Get a positive delta so that the scale can be calculated properly
+                delta = abs(delta);
+                if(delta > this->maxBuffer) {
+                        delta = this->maxBuffer;
+                }
+                else if (delta < this->minBuffer) {
+                        delta = this->minBuffer;
+                }
+                return (((this->maxHz - this->minHz) * (delta - this->minBuffer)) / (this->maxBuffer - this->minBuffer)) + this->minHz;
+        }
+
         /// @retval flag if the audio frame should be written
         bool update(int buffered_count, int to_be_written) {
                 if (!m_enabled) {
@@ -438,8 +451,8 @@ public:
                 // do we have enough samples to work out what the drift is
                 uint32_t average_buffer_depth = (uint32_t)average_buffer_samples.avg();
                 int32_t delta = (int32_t)average_buffer_depth - (int32_t) buffered_count;
-                if ( average_buffer_samples.filled()) {
-                        if( target_buffer_fill == 0){
+                if (average_buffer_samples.filled()) {
+                        if( target_buffer_fill == 0) {
                                 target_buffer_fill = average_buffer_depth;
                                 LOG(LOG_LEVEL_VERBOSE) << MOD_NAME << " UPDATE target "<< target_buffer_fill <<"\n";
                         }
@@ -447,11 +460,11 @@ public:
                         if (average_buffer_depth  > target_buffer_fill + jitter  )
                         {
                                 // buffered samples to big shrink
-                                dst_frame_rate = (bmdAudioSampleRate48kHz - 5) * BASE;
+                                dst_frame_rate = (bmdAudioSampleRate48kHz - (int)this->scaleBufferDelta(average_buffer_depth - target_buffer_fill)) * BASE;
                                 LOG(LOG_LEVEL_VERBOSE) << MOD_NAME << " UPDATE playing speed fast " <<  average_buffer_depth << " vs " << buffered_count << " " << delta << " delta " << average_delta.getTotal() << " average_velocity " <<  frameJitter << " jitter\n";
                         } else if(average_buffer_depth < target_buffer_fill - jitter ) {
                                  // buffer is increasing as we are not playing slower than the source
-                                dst_frame_rate = (bmdAudioSampleRate48kHz + 5) * BASE;
+                                dst_frame_rate = (bmdAudioSampleRate48kHz + (int)this->scaleBufferDelta(average_buffer_depth - target_buffer_fill)) * BASE;
                                 LOG(LOG_LEVEL_VERBOSE) << MOD_NAME << " UPDATE playing speed slow " <<  average_buffer_depth << " vs " << buffered_count << " " << delta << " delta " << average_delta.getTotal() << " average_velocity " <<  frameJitter << " jitter\n";
                         } else {
                                 LOG(LOG_LEVEL_VERBOSE) << MOD_NAME << " UPDATE playing speed normal " <<  average_buffer_depth << " vs " << buffered_count << " " << delta << " delta " << average_delta.getTotal() << " average_velocity " <<  frameJitter << " jitter\n";
@@ -541,6 +554,13 @@ private:
         int m_resample_level = 0; // <0 downsampling, 0 none
         uint32_t target_buffer_fill =0;
         uint32_t previous_buffer = 0;
+
+        // The min and max Hz changes we can resample between
+        uint32_t minHz = 5;
+        uint32_t maxHz = 50;
+        // The min and max values to scale between
+        uint32_t minBuffer = 100;
+        uint32_t maxBuffer = 600;
 
         /// DeckLink buffers 3 frames of sound
         constexpr static int soft_buf_ratio_pct = 250;
