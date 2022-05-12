@@ -745,8 +745,8 @@ private:
         // Store a audio_summary of resampling
         DecklinkAudioSummary *audio_summary = nullptr;
 
-        static const uint32_t POS_JITTER_DEFAULT = 5;
-        static const uint32_t NEG_JITTER_DEFAULT = 5;
+        static const uint32_t POS_JITTER_DEFAULT = 600;
+        static const uint32_t NEG_JITTER_DEFAULT = 600;
 };
 
 #define DECKLINK_MAGIC 0x12de326b
@@ -798,7 +798,7 @@ struct state_decklink {
 
         mutex               reconfiguration_lock; ///< for audio and video reconf to be mutually exclusive
 
-        AudioDriftFixer audio_drift_fixer{250, 25, 2700, 600, 600};
+        AudioDriftFixer audio_drift_fixer{250, 25, 2700, 5, 5};
 
         uint32_t            last_buffered_samples;
         int32_t             drift_since_last_correction;
