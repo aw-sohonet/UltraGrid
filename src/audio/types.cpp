@@ -559,6 +559,11 @@ void audio_frame2::resample_channel(audio_frame2_resampler* resampler_state, int
         }
         // The speex resampler process returns the number of frames written + 1 (so ensure we subtract 1 when setting the length)
         new_channel->len = out_len * sizeof(int16_t);
+        // Unfortunately, the speex resampler clips. We therefore attenuate by a very small amount.  This number was determined experimentaly.
+        // Obtained from - https://github.com/libaudioverse/speex_resampler_cpp/blob/master/src/resampler_class.cpp
+        for(int i = 0; i < new_channel->len; i++) {
+                new_channel->data[i] = (int16_t) round((float)new_channel->data[i] * 0.94);
+        }
 #else
         LOG(LOG_LEVEL_ERROR) << "Audio frame resampler: cannot resample, SpeexDSP was not compiled in!\n";
 #endif
@@ -589,6 +594,11 @@ void audio_frame2::resample_channel_float(audio_frame2_resampler* resampler_stat
         }
         // The speex resampler process returns the number of frames written + 1 (so ensure we subtract 1 when setting the length)
         new_channel->len = out_len * sizeof(float);
+        // Unfortunately, the speex resampler clips. We therefore attenuate by a very small amount.  This number was determined experimentaly.
+        // Obtained from - https://github.com/libaudioverse/speex_resampler_cpp/blob/master/src/resampler_class.cpp
+        for(int i = 0; i < new_channel->len; i++) {
+                new_channel->data[i] *= 0.94;
+        }
 #else
         LOG(LOG_LEVEL_ERROR) << "Audio frame resampler: cannot resample, SpeexDSP was not compiled in!\n";
 #endif
