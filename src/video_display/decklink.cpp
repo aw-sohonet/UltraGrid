@@ -745,8 +745,8 @@ private:
         // Store a audio_summary of resampling
         DecklinkAudioSummary *audio_summary = nullptr;
 
-        static const uint32_t POS_JITTER_DEFAULT = 600;
-        static const uint32_t NEG_JITTER_DEFAULT = 600;
+        static const uint32_t POS_JITTER_DEFAULT = 5;
+        static const uint32_t NEG_JITTER_DEFAULT = 5;
 };
 
 #define DECKLINK_MAGIC 0x12de326b
