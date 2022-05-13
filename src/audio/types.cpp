@@ -623,7 +623,7 @@ tuple<bool, bool, audio_frame2> audio_frame2::resample_fake([[maybe_unused]] aud
                 throw logic_error("Only 16 or 32 bits per sample are currently supported for resampling!");
         }
 
-        if(resampler_state.resampler_is_set()) {
+        if(!resampler_state.resampler_is_set()) {
                 LOG(LOG_LEVEL_ERROR) << "[audio_frame2] Resampler made at " << new_sample_rate_num / new_sample_rate_den << "\n";
                 reinitialised_resampler = resampler_state.create_resampler(this->sample_rate, new_sample_rate_num, new_sample_rate_den, this->channels.size(), this->bps);
                 if(!reinitialised_resampler) {
