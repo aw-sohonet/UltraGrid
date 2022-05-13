@@ -633,7 +633,7 @@ tuple<bool, bool, audio_frame2> audio_frame2::resample_fake([[maybe_unused]] aud
         if (sample_rate != resampler_state.resample_from
                 || new_sample_rate_num != resampler_state.resample_to_num 
                 || new_sample_rate_den != resampler_state.resample_to_den) {
-                speex_resampler_set_rate_frac(resampler_state.resampler, new_sample_rate_num, new_sample_rate_den,
+                speex_resampler_set_rate_frac((SpeexResamplerState *) resampler_state.resampler, new_sample_rate_num, new_sample_rate_den,
                                               this->sample_rate, new_sample_rate_num / new_sample_rate_den);
                 LOG(LOG_LEVEL_ERROR) << "[audio_frame2] Resampler (re)made at " << new_sample_rate_num / new_sample_rate_den << "\n";
         }
