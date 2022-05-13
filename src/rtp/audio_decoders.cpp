@@ -834,7 +834,7 @@ int decode_audio_frame(struct coded_data *cdata, void *pbuf_data, struct pbuf_st
         //         decoder->resampler.resample_set_destroy_flag(true);
         // }
 
-        if (decoder->req_resample_to != 0 || s->buffer.sample_rate != decompressed.get_sample_rate()) {
+        if (decoder->req_resample_to != 0) {
                 // If the input is 32 bits big assume we're using int32 (rather than float). Convert from that to float
                 // as speex only has support for floating point resampling (and not int32). Then there is a requirement
                 // to convert back afterwards.
