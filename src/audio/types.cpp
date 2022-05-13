@@ -561,9 +561,9 @@ void audio_frame2::resample_channel(audio_frame2_resampler* resampler_state, int
         new_channel->len = out_len * sizeof(int16_t);
         // Unfortunately, the speex resampler clips. We therefore attenuate by a very small amount.  This number was determined experimentaly.
         // Obtained from - https://github.com/libaudioverse/speex_resampler_cpp/blob/master/src/resampler_class.cpp
-        // for(int i = 0; i < new_channel->len; i++) {
-        //         new_channel->data[i] = (int16_t) round((float)new_channel->data[i] * 0.94);
-        // }
+        for(int i = 0; i < new_channel->len; i++) {
+                new_channel->data[i] = (int16_t) round((float)new_channel->data[i] * 0.94);
+        }
 #else
         LOG(LOG_LEVEL_ERROR) << "Audio frame resampler: cannot resample, SpeexDSP was not compiled in!\n";
 #endif
@@ -596,9 +596,9 @@ void audio_frame2::resample_channel_float(audio_frame2_resampler* resampler_stat
         new_channel->len = out_len * sizeof(float);
         // Unfortunately, the speex resampler clips. We therefore attenuate by a very small amount.  This number was determined experimentaly.
         // Obtained from - https://github.com/libaudioverse/speex_resampler_cpp/blob/master/src/resampler_class.cpp
-        // for(int i = 0; i < new_channel->len; i++) {
-        //         new_channel->data[i] *= 0.94;
-        // }
+        for(int i = 0; i < new_channel->len; i++) {
+                new_channel->data[i] *= 0.94;
+        }
 #else
         LOG(LOG_LEVEL_ERROR) << "Audio frame resampler: cannot resample, SpeexDSP was not compiled in!\n";
 #endif
@@ -606,9 +606,9 @@ void audio_frame2::resample_channel_float(audio_frame2_resampler* resampler_stat
 
 tuple<bool, bool, audio_frame2> audio_frame2::resample_fake([[maybe_unused]] audio_frame2_resampler & resampler_state, int new_sample_rate_num, int new_sample_rate_den)
 {
-        // if (new_sample_rate_num / new_sample_rate_den == sample_rate && new_sample_rate_num % new_sample_rate_den == 0) {
-        //         return {true, false, audio_frame2()};
-        // }
+        if (new_sample_rate_num / new_sample_rate_den == sample_rate && new_sample_rate_num % new_sample_rate_den == 0) {
+                return {true, false, audio_frame2()};
+        }
 
         // If there is resampling occuring then time how long the function takes.
         std::chrono::high_resolution_clock::time_point resample_begin = std::chrono::high_resolution_clock::now();
@@ -620,26 +620,19 @@ tuple<bool, bool, audio_frame2> audio_frame2::resample_fake([[maybe_unused]] aud
         // Speex has support for both 16bit audio and floating point 32bit audio
         if (this->bps != 2 && this->bps != 4) {
                 LOG(LOG_LEVEL_DEBUG) << " Resample unsupported BPS " << bps << "\n";
-                throw logic_error("Only 16 or 32 bits per sample are currently supported for resampling!");
+                throw logic_error("Only 16 bits per sample are currently supported for resampling!");
         }
 
-        if(!resampler_state.resampler_is_set()) {
-                LOG(LOG_LEVEL_ERROR) << "[audio_frame2] Resampler made at " << new_sample_rate_num / new_sample_rate_den << "\n";
+        if ((sample_rate != resampler_state.resample_from
+                        || new_sample_rate_num != resampler_state.resample_to_num || new_sample_rate_den != resampler_state.resample_to_den
+                        || channels.size() != resampler_state.resample_ch_count) || resampler_state.resample_initial_bps != this->bps
+                        || resampler_state.destroy_resampler) {
                 reinitialised_resampler = resampler_state.create_resampler(this->sample_rate, new_sample_rate_num, new_sample_rate_den, this->channels.size(), this->bps);
                 if(!reinitialised_resampler) {
                         return {false, false, audio_frame2{}};
                 }
-        }
-
-        if (sample_rate != resampler_state.resample_from
-                || new_sample_rate_num != resampler_state.resample_to_num 
-                || new_sample_rate_den != resampler_state.resample_to_den) {
-                speex_resampler_set_rate_frac((SpeexResamplerState *) resampler_state.resampler, new_sample_rate_num, new_sample_rate_den,
-                                              this->sample_rate, new_sample_rate_num / new_sample_rate_den);
                 LOG(LOG_LEVEL_ERROR) << "[audio_frame2] Resampler (re)made at " << new_sample_rate_num / new_sample_rate_den << "\n";
         }
-
-        LOG(LOG_LEVEL_INFO) << "Resampling" << "\n";
 
         // Initialise the new channels that the resampler is going to write into
         std::vector<channel> new_channels(channels.size());
