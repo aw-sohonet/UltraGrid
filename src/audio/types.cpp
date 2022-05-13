@@ -639,6 +639,8 @@ tuple<bool, bool, audio_frame2> audio_frame2::resample_fake([[maybe_unused]] aud
                 LOG(LOG_LEVEL_ERROR) << "[audio_frame2] Resampler (re)made at " << new_sample_rate_num / new_sample_rate_den << "\n";
         }
 
+        LOG(LOG_LEVEL_INFO) << "Resampling" << "\n";
+
         // Initialise the new channels that the resampler is going to write into
         std::vector<channel> new_channels(channels.size());
         for (size_t i = 0; i < channels.size(); i++) {
