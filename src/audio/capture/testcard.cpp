@@ -66,7 +66,7 @@ using std::string;
 
 #define AUDIO_CAPTURE_TESTCARD_MAGIC 0xf4b3c9c9u
 
-#define DEFAULT_AUDIO_BPS 4
+#define DEFAULT_AUDIO_BPS 2
 #define DEFAULT_AUDIO_SAMPLE_RATE 48000
 
 #define CHUNKS_PER_SEC 25 // 1 video frame time @25 fps
