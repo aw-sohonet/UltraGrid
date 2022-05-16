@@ -287,11 +287,11 @@ bool audio_frame2_resampler::create_resampler(uint32_t original_sample_rate, uin
         }
         soxr_set_io_ratio((soxr_t)this->resampler, ((new_sample_rate_num / new_sample_rate_den) / original_sample_rate), 0);
 
-        this->resample_from = original_sample_rate;
 
         LOG(LOG_LEVEL_ERROR) << "RESAMPLE " << (new_sample_rate_num / new_sample_rate_den) << "\n";
 
         // Setup resampler values
+        this->resample_from = original_sample_rate;
         this->resample_to_num = new_sample_rate_num;
         this->resample_to_den = new_sample_rate_den;
         this->resample_ch_count = channel_size;
@@ -693,7 +693,11 @@ tuple<bool, bool, audio_frame2> audio_frame2::resample_fake([[maybe_unused]] aud
         if (sample_rate != resampler_state.resample_from
                         || new_sample_rate_num != resampler_state.resample_to_num 
                         || new_sample_rate_den != resampler_state.resample_to_den) {
+                LOG(LOG_LEVEL_ERROR) << "[audio_frame2_resampler] NUM " << new_sample_rate_num  << " " << resampler_state.resample_to_num << "\n";
+                LOG(LOG_LEVEL_ERROR) << "[audio_frame2_resampler] DEN " << new_sample_rate_den  << " " << resampler_state.resample_to_den << "\n";
                 LOG(LOG_LEVEL_ERROR) << "[audio_frame2_resampler] Changing resampler rate " << (new_sample_rate_num / new_sample_rate_den) << "\n";
+                resampler_state.resample_to_num = new_sample_rate_num;
+                resampler_state.resample_to_den = new_sample_rate_den;
                 soxr_set_io_ratio((soxr_t)resampler_state.resampler, ((double)this->sample_rate / ((double)new_sample_rate_num / (double)new_sample_rate_den)), 0);
         }
 
