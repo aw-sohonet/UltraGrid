@@ -88,9 +88,12 @@ audio_desc::operator string() const
 
 audio_frame2_resampler::~audio_frame2_resampler() {
         if (resampler) {
-#ifdef HAVE_SPEEXDSP
-                speex_resampler_destroy((SpeexResamplerState *) resampler);
-#endif
+#ifdef HAVE_SOXR                
+                soxr_delete((soxr_t) resampler);
+#endif                
+// #ifdef HAVE_SPEEXDSP
+//                 speex_resampler_destroy((SpeexResamplerState *) resampler);
+// #endif
         }
 }
 
@@ -270,19 +273,19 @@ bool audio_frame2_resampler::create_resampler(uint32_t original_sample_rate, uin
 
         /* When creating a var-rate resampler, q_spec must be set as follows: */
         // soxr_quality_spec_t q_spec = soxr_quality_spec(SOXR_HQ, NULL);
-        soxr_quality_spec_t q_spec = soxr_quality_spec(SOXR_VHQ, 0);
+        soxr_quality_spec_t q_spec = soxr_quality_spec(SOXR_HQ, SOXR_VR);
         soxr_io_spec_t io_spec = soxr_io_spec(SOXR_INT16_S, SOXR_INT16_S);
         soxr_error_t error;
         /* The ratio of the given input rate and output rates must equate to the
          * maximum I/O ratio that will be used: */
-        this->resampler = soxr_create(original_sample_rate, (new_sample_rate_num / new_sample_rate_den),
+        this->resampler = soxr_create(2, 1,
                                       channel_size, &error, &io_spec, &q_spec, NULL);
 
         if (error) {
                 LOG(LOG_LEVEL_ERROR) << "[audio_frame2_resampler] Cannot initialize resampler: " << soxr_strerror(error) << "\n";
                 return false;
         }
-        // soxr_set_io_ratio((soxr_t)this->resampler, 0.0625, 0);
+        soxr_set_io_ratio((soxr_t)this->resampler, ((new_sample_rate_num / new_sample_rate_den) / original_sample_rate), 0);
 
         this->resample_from = original_sample_rate;
 
@@ -687,11 +690,12 @@ tuple<bool, bool, audio_frame2> audio_frame2::resample_fake([[maybe_unused]] aud
                 }
         }
 
-        // if (sample_rate != resampler_state.resample_from
-        //                 || new_sample_rate_num != resampler_state.resample_to_num 
-        //                 || new_sample_rate_den != resampler_state.resample_to_den) {
-        //         soxr_set_io_ratio((soxr_t)resampler_state.resampler, 1, 0);
-        // }
+        if (sample_rate != resampler_state.resample_from
+                        || new_sample_rate_num != resampler_state.resample_to_num 
+                        || new_sample_rate_den != resampler_state.resample_to_den) {
+                LOG(LOG_LEVEL_ERROR) << "[audio_frame2_resampler] Changing resampler rate " << (new_sample_rate_num / new_sample_rate_den) << "\n";
+                soxr_set_io_ratio((soxr_t)resampler_state.resampler, ((double)this->sample_rate / ((double)new_sample_rate_num / (double)new_sample_rate_den)), 0);
+        }
 
         // Initialise the new channels that the resampler is going to write into
         void * * const obuf_ptrs = (void * *) malloc(sizeof(void *) * this->channels.size());
@@ -709,7 +713,6 @@ tuple<bool, bool, audio_frame2> audio_frame2::resample_fake([[maybe_unused]] aud
                 ibuf_ptrs[i] = this->channels[i].data.get();
         }
 
-        LOG(LOG_LEVEL_INFO) << " Original size " << this->get_data_len(0) / this->bps << "\n";
         size_t inlen = this->get_data_len(0) / this->bps;
         size_t outlen = new_channels[0].len / this->bps;
         size_t odone = 0;
@@ -721,12 +724,13 @@ tuple<bool, bool, audio_frame2> audio_frame2::resample_fake([[maybe_unused]] aud
         for(int i = 0; i < new_channels.size(); i++) {
                 new_channels[i].len = odone * this->bps;
         }
-        LOG(LOG_LEVEL_INFO) << " New size " << odone << "\n";
+
+        if(odone != inlen) {
+                LOG(LOG_LEVEL_ERROR) << "[audio_frame2_resampler] added " << odone << " samples\n";
+        }
 
         channels = move(new_channels);
         free(obuf_ptrs); free(ibuf_ptrs);
-
-        LOG(LOG_LEVEL_INFO) << " Moved " << odone << "\n";
 
         audio_frame2 remainder = {};
         return {true, reinitialised_resampler, std::move(remainder)};

@@ -688,12 +688,12 @@ public:
                         if (average_buffer_depth  > target_buffer_fill + this->pos_jitter)
                         {
                                 // The buffer is too large, so we need to resample down to remove some frames
-                                resample_hz = (int)this->scale_buffer_delta(average_buffer_depth - target_buffer_fill - this->pos_jitter);
+                                resample_hz = (int)this->scale_buffer_delta(average_buffer_depth - target_buffer_fill - this->pos_jitter) - 1000;
                                 dst_frame_rate = (bmdAudioSampleRate48kHz - resample_hz) * BASE;
                                 this->audio_summary->increment_resample_low();
                         } else if(average_buffer_depth < target_buffer_fill - this->neg_jitter) {
                                  // The buffer is too small, so we need to resample up to generate some additional frames
-                                resample_hz = (int)this->scale_buffer_delta(target_buffer_fill - average_buffer_depth - this->neg_jitter);
+                                resample_hz = (int)this->scale_buffer_delta(target_buffer_fill - average_buffer_depth - this->neg_jitter) + 1000;
                                 dst_frame_rate = (bmdAudioSampleRate48kHz + resample_hz) * BASE;
                                 this->audio_summary->increment_resample_high();
                         } else {
