@@ -274,7 +274,19 @@ bool audio_frame2_resampler::create_resampler(uint32_t original_sample_rate, uin
         /* When creating a var-rate resampler, q_spec must be set as follows: */
         // soxr_quality_spec_t q_spec = soxr_quality_spec(SOXR_HQ, NULL);
         soxr_quality_spec_t q_spec = soxr_quality_spec(SOXR_HQ, SOXR_VR);
-        soxr_io_spec_t io_spec = soxr_io_spec(SOXR_INT16_S, SOXR_INT16_S);
+        soxr_io_spec_t io_spec;
+        if(bps == 2) {
+                io_spec = soxr_io_spec(SOXR_INT16_S, SOXR_INT16_S);
+        }
+        else if (bps == 4) {
+                io_spec = soxr_io_spec(SOXR_INT32_S, SOXR_INT32_S);
+        }
+        else {
+                LOG(LOG_LEVEL_ERROR) << "[audio_frame2_resampler] Unsupported BPS of: " << bps << "\n";  
+                return false;
+        }
+        
+        
         soxr_error_t error;
         /* The ratio of the given input rate and output rates must equate to the
          * maximum I/O ratio that will be used: */
@@ -285,7 +297,7 @@ bool audio_frame2_resampler::create_resampler(uint32_t original_sample_rate, uin
                 LOG(LOG_LEVEL_ERROR) << "[audio_frame2_resampler] Cannot initialize resampler: " << soxr_strerror(error) << "\n";
                 return false;
         }
-        soxr_set_io_ratio((soxr_t)this->resampler, ((new_sample_rate_num / new_sample_rate_den) / original_sample_rate), 0);
+        soxr_set_io_ratio((soxr_t)this->resampler, ((double)original_sample_rate / ((double)new_sample_rate_num / (double)new_sample_rate_den)), 0);
 
 
         LOG(LOG_LEVEL_ERROR) << "RESAMPLE " << (new_sample_rate_num / new_sample_rate_den) << "\n";
