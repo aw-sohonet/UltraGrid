@@ -208,6 +208,9 @@ bool audio_frame2_resampler::create_resampler(uint32_t original_sample_rate, uin
         /* When creating a var-rate resampler, q_spec must be set as follows: */
         // soxr_quality_spec_t q_spec = soxr_quality_spec(SOXR_HQ, NULL);
         soxr_quality_spec_t q_spec = soxr_quality_spec(SOXR_HQ, SOXR_VR);
+        // Use a low amount of threads because UltraGrid only provides a small audio buffer
+        // and multi-threading provides little (or worse) performance than being single threaded
+        soxr_runtime_spec_t const runtime_spec = soxr_runtime_spec(1);
         soxr_io_spec_t io_spec;
         if(bps == 2) {
                 io_spec = soxr_io_spec(SOXR_INT16_S, SOXR_INT16_S);
@@ -225,7 +228,7 @@ bool audio_frame2_resampler::create_resampler(uint32_t original_sample_rate, uin
         /* The ratio of the given input rate and output rates must equate to the
          * maximum I/O ratio that will be used. A resample rate of 2 to 1 would be excessive,
            but provides a sensible ceiling */
-        this->resampler = soxr_create(2, 1, channel_size, &error, &io_spec, &q_spec, NULL);
+        this->resampler = soxr_create(2, 1, channel_size, &error, &io_spec, &q_spec, &runtime_spec);
 
         if (error) {
                 LOG(LOG_LEVEL_ERROR) << "[audio_frame2_resampler] Cannot initialize resampler: " << soxr_strerror(error) << "\n";
@@ -553,6 +556,7 @@ tuple<bool, bool, audio_frame2> audio_frame2::resample_fake([[maybe_unused]] aud
         // Track whether or not the resampler was reinitialised so that there is not an attempt to pull the latency buffer
         // from the resampler
         bool reinitialised_resampler = false;
+        std::chrono::high_resolution_clock::time_point funcBegin = std::chrono::high_resolution_clock::now();
 
 #ifdef HAVE_SOXR
         if (!resampler_state.resampler_is_set()) {
@@ -602,6 +606,10 @@ tuple<bool, bool, audio_frame2> audio_frame2::resample_fake([[maybe_unused]] aud
 
         channels = move(new_channels);
         free(obuf_ptrs); free(ibuf_ptrs);
+
+        std::chrono::high_resolution_clock::time_point funcEnd = std::chrono::high_resolution_clock::now();
+        long long resamplerDuration = std::chrono::duration_cast<std::chrono::milliseconds>(funcEnd - funcBegin).count();
+        LOG(LOG_LEVEL_VERBOSE) << "[audio_frame2_resampler] resampler_duration " << resamplerDuration << "\n";
 
         // Remainders aren't as relevant when using SOXR
         audio_frame2 remainder = {};
