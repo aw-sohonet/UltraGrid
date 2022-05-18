@@ -182,9 +182,6 @@ int audio_frame2_resampler::get_resampler_initial_bps() {
         return this->resample_initial_bps;
 }
 
-ADD_TO_PARAM("resampler-quality", "* resampler-quality=[0-10]\n"
-                "  Sets audio resampler quality in range 0 (worst) and 10 (best), default " TOSTRING(DEFAULT_RESAMPLE_QUALITY) "\n");
-
 /**
  * @brief This function will create (and destroy) a new resampler.
  * 
@@ -206,7 +203,6 @@ bool audio_frame2_resampler::create_resampler(uint32_t original_sample_rate, uin
         this->resampler = nullptr;
 
         /* When creating a var-rate resampler, q_spec must be set as follows: */
-        // soxr_quality_spec_t q_spec = soxr_quality_spec(SOXR_HQ, NULL);
         soxr_quality_spec_t q_spec = soxr_quality_spec(SOXR_HQ, SOXR_VR);
         // Use a low amount of threads because UltraGrid only provides a small audio buffer
         // and multi-threading provides little (or worse) performance than being single threaded
