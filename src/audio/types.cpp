@@ -182,6 +182,11 @@ int audio_frame2_resampler::get_resampler_initial_bps() {
         return this->resample_initial_bps;
 }
 
+ADD_TO_PARAM("resampler-threaded", "* resampler-threaded\n"
+                "  Sets audio resampler to use threads (1 per channel).\n" \
+                "  This should only be used with large buffer sizes otherwise there is a risk\n" \
+                "  that there is additional overhead created by threading.\n");
+
 /**
  * @brief This function will create (and destroy) a new resampler.
  * 
@@ -206,6 +211,14 @@ bool audio_frame2_resampler::create_resampler(uint32_t original_sample_rate, uin
         soxr_quality_spec_t q_spec = soxr_quality_spec(SOXR_HQ, SOXR_VR);
         // Use a low amount of threads because UltraGrid only provides a small audio buffer
         // and multi-threading provides little (or worse) performance than being single threaded
+        int threads = 1;
+        if (commandline_params.find("resampler-threaded") != commandline_params.end()) {
+                // If someone has requested that threads are used then 
+                // we should get the thread count to match
+                // the amount of channels being resampled.
+                LOG(LOG_LEVEL_INFO) << "[audio_frame2] Setting the resampler to have " << channel_size << " threads\n";
+                threads = channel_size;
+        }
         soxr_runtime_spec_t const runtime_spec = soxr_runtime_spec(1);
         soxr_io_spec_t io_spec;
         if(bps == 2) {
