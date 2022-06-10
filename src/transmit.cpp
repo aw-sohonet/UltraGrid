@@ -826,7 +826,6 @@ void audio_tx_send(struct tx* tx, struct rtp *rtp_session, const audio_frame2 * 
                         }
 
                         const char *data = chan_data + pos;
-                        int data_len = tx->mtu - hdrs_len;
                         if(pos + data_len >= (unsigned int) buffer->get_data_len(channel)) {
                                 data_len = buffer->get_data_len(channel) - pos;
                                 if(channel == buffer->get_channel_count() - 1)
