@@ -752,9 +752,13 @@ int decode_audio_frame(struct coded_data *cdata, void *pbuf_data, struct pbuf_st
         decoder->summary.update(bufnum);
 
         if (fec_params != 0) {
+                std::chrono::high_resolution_clock::time_point preFec = std::chrono::high_resolution_clock::now();
                 if (!audio_fec_decode(s, fec_data, fec_params, received_frame)) {
                         return FALSE;
                 }
+                std::chrono::high_resolution_clock::time_point postFec = std::chrono::high_resolution_clock::now();
+                long long fecDuration = std::chrono::duration_cast<std::chrono::milliseconds>(postFec - preFec).count();
+                LOG(LOG_LEVEL_VERBOSE) << MOD_NAME << "fec_duration " << fecDuration << "\n";
         }
 
         s->frame_size = received_frame.get_data_len();
