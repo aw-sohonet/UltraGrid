@@ -415,7 +415,7 @@ void rs::decodeAudio(FecChannel* channel) {
 
 void rs::initialiseChannel(FecChannel* channel, uint32_t fecHeader) {
     channel->setKBlocks(fecHeader >> 24);
-    channel->setMBlocks((fecHeader >> 16) & 0XFF);
+    channel->setMBlocks(((fecHeader >> 16) & 0XFF) + channel->getKBlocks());
     channel->setSegmentSize(fecHeader & 0XFFFF);
     channel->initialise();
 }
@@ -518,7 +518,8 @@ void FecChannel::addBlockCopy(char* data, size_t dataSize, size_t offset) {
         }
         else {
             // Calculate the new index (as this is a parity segment)
-            int newIndex = (initialIndex + i) - this->kBlocks;
+            int newIndex = (initialIndex + i) - this->kBlocks - 1;
+            LOG(LOG_LEVEL_VERBOSE) << "New Index (Parity) " << newIndex << "\n";
             memcpy(this->paritySegments[newIndex], data + (this->segmentSize * i), this->segmentSize);
             this->parityIndexes[newIndex] = initialIndex + i;
         }
