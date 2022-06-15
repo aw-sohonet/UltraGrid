@@ -625,6 +625,9 @@ static bool audio_fec_decode_channels(struct pbuf_audio_data *s, vector<FecChann
                 for(int i = 1; i < fecChannel->getKBlocks(); i++) {
                         frame.replace(channel, i * fecChannel->getSegmentSize(), (*fecChannel)[i], fecChannel->getSegmentSize());
                 }
+                // Now we've placed the data into the audio frame, we can delete the channel
+                delete fecChannel;
+                fecChannelData[channel] = nullptr;
         }
         return true;
 }
