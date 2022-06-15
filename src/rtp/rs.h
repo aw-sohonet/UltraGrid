@@ -49,7 +49,7 @@ struct video_frame;
 class FecChannel;
 
 struct rs : public fec {
-        rs(unsigned int k, unsigned int n, unsigned int mult);
+        rs(unsigned int k, unsigned int n);
         rs(const char *cfg);
         virtual ~rs();
         std::shared_ptr<video_frame> encode(std::shared_ptr<video_frame> frame) override;
@@ -57,10 +57,7 @@ struct rs : public fec {
         bool decode(char *in, int in_len, char **out, int *len,
                 const std::map<int, int> &) override;
         void decodeAudio(FecChannel* channel);
-        static void initialiseChannel(FecChannel* channel, uint32_t fecHeader);
-
-        [[nodiscard]] unsigned int getK() const;
-        [[nodiscard]] unsigned int getM() const;
+        static void initialiseChannel(FecChannel& channel, uint32_t fecHeader);
 
 private:
         int get_ss(int hdr_len, int len);
@@ -68,10 +65,8 @@ private:
         void *state = nullptr;
         /** param k the number of blocks required to reconstruct
             param m the total number of blocks created
-            Currently both are limited to a max of 256.
-            The multiplication factor is used for how many segments should
-            be sent in a single packet. */
-        unsigned int m_k, m_n, m_mult;
+            Currently both are limited to a max of 256 */
+        unsigned int m_k, m_n;
 };
 
 enum FecRecoveryState {
@@ -83,56 +78,56 @@ enum FecRecoveryState {
 class FecChannel {
 public:
         FecChannel();
-        FecChannel(uint32_t kBlocks, uint32_t mBlocks, size_t segmentSize);
+        FecChannel(int kBlocks, int mBlocks, int segmentSize);
         ~FecChannel();
         void initialise();
-        void addBlockCopy(char* data, size_t dataSize, size_t offset);
+        void addBlock(char* data, size_t dataSize, size_t offset);
         FecRecoveryState generateRecovery();
         void recover();
         // Provide functions for access into the class
-        char* getSegment(std::size_t index);
+        char* getSegment(int index);
         char* operator[](std::size_t index);
         const char* operator[](std::size_t index) const;
 
         char** getRecoverySegments();
         char** getOutputSegments();
-        uint32_t* getRecoveryIndex();
-        void setSegmentSize(uint32_t pSegmentSize);
-        [[nodiscard]] uint32_t getSegmentSize() const;
-        void setKBlocks(uint32_t pKBlocks);
-        [[nodiscard]] uint32_t getKBlocks() const;
-        void setMBlocks(uint32_t pMBlocks);
-        [[nodiscard]] uint32_t getMBlocks() const;
+        unsigned int* getRecoveryIndex();
+        void setSegmentSize(int segmentSize);
+        int getSegmentSize();
+        void setKBlocks(int kBlocks);
+        int getKBlocks();
+        void setMBlocks(int mBlocks);
+        int getMBlocks();
 private:
-        bool initialised{};
+        bool initialised;
         /**
          *  K is the number of blocks required to reconstruct
          *  M is the total number of blocks created
          */
-        uint32_t kBlocks{};
-        uint32_t mBlocks{};
+        int kBlocks;
+        int mBlocks;
         // We want to know how many parity segments to expect.
         // The block delta also lets us know how many segments
         // can contain errors in order to recover the data
-        uint32_t blockDelta{};
+        int blockDelta;
 
         // This is the byte size of each segment
-        uint32_t segmentSize{};
+        int segmentSize;
 
         // In order to reconstruct the channel data we need an array
         // of all of the segments that we received. The segment indexes
         // represent what the index of the segement is in the overall
         // buffer
-        char** segments{};
-        char** paritySegments{};
-        uint32_t* segmentIndexes{};
-        uint32_t* parityIndexes{};
+        char** segments;
+        char** paritySegments;
+        unsigned int* segmentIndexes;
+        unsigned int* parityIndexes;
         // It's nice to have a seperate list for constructing the decoding indexes
-        char** recoverySegments{};
-        uint32_t* recoveryIndex{};
+        char** recoverySegments;
+        unsigned int* recoveryIndex;
 
-        char** outputSegments{};
-        uint32_t outputSize;
+        char** outputSegments;
+        int outputSize;
         bool outputCreated;
 };
 

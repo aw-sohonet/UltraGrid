@@ -765,7 +765,7 @@ void audio_tx_send(struct tx* tx, struct rtp *rtp_session, const audio_frame2 * 
                         hdrs_len += (sizeof(audio_payload_hdr_t));
                         rtp_hdr_len = sizeof(audio_payload_hdr_t);
                         format_audio_header(buffer, channel, tx->buffer, rtp_hdr);
-                } else {
+                } else if(buffer->get_fec_params(0).type != FEC_RS) {
                         hdrs_len += (sizeof(fec_payload_hdr_t));
                         rtp_hdr_len = sizeof(fec_payload_hdr_t);
                         uint32_t tmp = channel << 22;
@@ -777,6 +777,25 @@ void audio_tx_send(struct tx* tx, struct rtp *rtp_session, const audio_frame2 * 
                                         buffer->get_fec_params(channel).k << 19 |
                                         buffer->get_fec_params(channel).m << 6 |
                                         buffer->get_fec_params(channel).c);
+                        rtp_hdr[4] = htonl(buffer->get_fec_params(channel).seed);
+                }
+                // Setup the header for Reed Sollomon
+                else {
+                        hdrs_len += (sizeof(fec_payload_hdr_t));
+                        rtp_hdr_len = sizeof(fec_payload_hdr_t);
+                        uint32_t tmp = channel << 22;
+                        tmp |= 0x3fffff & tx->buffer;
+                        // see definition in rtp_callback.h
+                        rtp_hdr[0] = htonl(tmp);
+                        rtp_hdr[2] = htonl(buffer->get_data_len(channel));
+                        rtp_hdr[3] = htonl(
+                                        // Both k & m are limited to 256 in the existing implementation
+                                        buffer->get_fec_params(channel).k << 24 |
+                                        buffer->get_fec_params(channel).m << 16 |
+                                        // Knowing the symbol size when it arrives is very important
+                                        // as it will help with splitting up the data appropiately. 16 bits
+                                        // allows for a symbol size up to the same size as a UDP packet (65535).
+                                        buffer->get_fec_params(channel).symbol_size);
                         rtp_hdr[4] = htonl(buffer->get_fec_params(channel).seed);
                 }
 
@@ -821,8 +840,19 @@ void audio_tx_send(struct tx* tx, struct rtp *rtp_session, const audio_frame2 * 
                 }
 
                 do {
+                        int data_len = 0;
                         if(tx->fec_scheme == FEC_MULT) {
                                 pos = mult_pos[mult_index];
+                        }
+
+                        LOG(LOG_LEVEL_VERBOSE) << "FEC SYMBOL SIZE: " << fec_symbol_size << "\n";
+                        // If we are using Reed Sollomon then we want to ensure that the packets we
+                        // are sending are a multiple of the size of the FEC symbols.
+                        if(tx->fec_scheme == FEC_RS && fec_symbol_size * 4< tx->mtu - hdrs_len) {
+                                data_len = fec_symbol_size * 4;
+                        }
+                        else {
+                                data_len = tx->mtu - hdrs_len;
                         }
 
                         const char *data = chan_data + pos;
@@ -851,6 +881,15 @@ void audio_tx_send(struct tx* tx, struct rtp *rtp_session, const audio_frame2 * 
                                       (char *) rtp_hdr, rtp_hdr_len,
                                       const_cast<char *>(data), data_len,
                                       0, 0, 0);
+                                // If the expectation is that this is being used in a lossy network it is important
+                                // that this packet arrive, so send it twice.
+                                if(tx->fec_scheme == FEC_RS && m == 1) {
+                                        rtp_send_data_hdr(rtp_session, timestamp, pt, m, 0,        /* contributing sources */
+                                                0,        /* contributing sources length */
+                                                (char *) rtp_hdr, rtp_hdr_len,
+                                                const_cast<char *>(data), data_len,
+                                                0, 0, 0);
+                                }
                         }
 
                         if(tx->fec_scheme == FEC_MULT) {
