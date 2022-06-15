@@ -431,9 +431,15 @@ void FecChannel::initialise() {
     this->blockDelta = this->mBlocks - this->kBlocks;
     // Allocate enough pointers to store an pointer to every channel segment
     this->segments = (char**)calloc(this->kBlocks, sizeof(char*));
+    for(int i = 0; i < this->kBlocks; i++) {
+        this->segments[i] = (char *)calloc(this->segmentSize, sizeof(char));
+    }
     this->segmentIndexes = (unsigned int*)calloc(this->kBlocks, sizeof(unsigned int));
     // Allocate enough pointers to store a pointer to every parity segment
     this->paritySegments = (char**)calloc(this->blockDelta, sizeof(char*));
+    for(int i = 0; i < this->blockDelta; i++) {
+        this->paritySegments[i] = (char *)calloc(this->segmentSize, sizeof(char));
+    }
     this->parityIndexes = (unsigned int*)calloc(this->blockDelta, sizeof(unsigned int));
     // Allocate the memory for the recovery segments, recovery index, and output segments
     this->recoverySegments = (char**)calloc(this->kBlocks, sizeof(char*));
@@ -445,8 +451,14 @@ FecChannel::~FecChannel() {
         // Free the resources we allocated for pointing at
         // the segments and indexes
         free(this->segments);
+        for(int i = 0; i < this->kBlocks; i++) {
+            free(this->segments[i]);
+        }
         free(this->segmentIndexes);
         free(this->paritySegments);
+        for(int i = 0; i < this->blockDelta; i++) {
+            free(this->paritySegments[i]);
+        }
         free(this->parityIndexes);
         free(this->recoverySegments);
         free(this->recoveryIndex);
@@ -460,6 +472,7 @@ FecChannel::~FecChannel() {
 }
 
 void FecChannel::addBlock(char* data, size_t dataSize, size_t offset) {
+    LOG(LOG_LEVEL_VERBOSE) << "Size " << dataSize << " Offset " << offset;
     // Calculate the number of segments given in the block of data
     int segments = dataSize / this->segmentSize;
     // Calculate the initial index of the data
@@ -476,6 +489,30 @@ void FecChannel::addBlock(char* data, size_t dataSize, size_t offset) {
             // Calculate the new index (as this is a parity segment)
             int newIndex = (initialIndex + i) - this->kBlocks;
             this->paritySegments[newIndex] = data + (this->segmentSize * i);
+            this->parityIndexes[newIndex] = initialIndex + i;
+        }
+    }
+}
+
+void FecChannel::addBlockCopy(char* data, size_t dataSize, size_t offset) {
+    LOG(LOG_LEVEL_VERBOSE) << "Size " << dataSize << " Offset " << offset;
+    // Calculate the number of segments given in the block of data
+    int segments = dataSize / this->segmentSize;
+    // Calculate the initial index of the data
+    int initialIndex = offset / this->segmentSize;
+    // Insert the indexes, and segments in
+    for(int i = 0; i < segments; i++) {
+        if((initialIndex + i) < this->kBlocks) {
+            // Calculate the new index (as this is a data segment)
+            int newIndex = initialIndex + i;
+            // Instead of taking a reference, allocate the memory and copy it in.
+            memcpy(this->segments[newIndex], data + (this->segmentSize * i), this->segmentSize);
+            this->segmentIndexes[newIndex] = initialIndex + i;
+        }
+        else {
+            // Calculate the new index (as this is a parity segment)
+            int newIndex = (initialIndex + i) - this->kBlocks;
+            memcpy(this->paritySegments[newIndex], data + (this->segmentSize * i), this->segmentSize);
             this->parityIndexes[newIndex] = initialIndex + i;
         }
     }
