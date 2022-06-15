@@ -414,7 +414,6 @@ void rs::decodeAudio(FecChannel* channel) {
 }
 
 void rs::initialiseChannel(FecChannel* channel, uint32_t fecHeader) {
-    fecHeader = ntohl(fecHeader);
     channel->setKBlocks(fecHeader >> 24);
     channel->setMBlocks((fecHeader >> 16) & 0XFF);
     channel->setSegmentSize(fecHeader & 0XFFFF);

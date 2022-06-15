@@ -806,7 +806,7 @@ int decode_audio_frame(struct coded_data *cdata, void *pbuf_data, struct pbuf_st
                         FecChannel* fecChannel;
                         if(fecChannels[channel] == nullptr) {
                                 fecChannel = new FecChannel();
-                                rs::initialiseChannel(fecChannel, audio_hdr[3]);
+                                rs::initialiseChannel(fecChannel, ntohl(audio_hdr[3]));
                                 fecChannels[channel] = fecChannel;
                         }
                         else {
