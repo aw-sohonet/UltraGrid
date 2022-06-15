@@ -82,6 +82,7 @@ public:
         ~FecChannel();
         void initialise();
         void addBlock(char* data, size_t dataSize, size_t offset);
+        void addBlockCopy(char* data, size_t dataSize, size_t offset);
         FecRecoveryState generateRecovery();
         void recover();
         // Provide functions for access into the class

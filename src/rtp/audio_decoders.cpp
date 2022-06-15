@@ -802,7 +802,7 @@ int decode_audio_frame(struct coded_data *cdata, void *pbuf_data, struct pbuf_st
                         else {
                                 fecChannel = fecChannels[channel];
                         }
-                        fecChannel->addBlock(data, length, offset);
+                        fecChannel->addBlockCopy(data, length, offset);
 
                         // fec_data.resize(input_channels);
                         // fec_data[channel].first.resize(buffer_len);
