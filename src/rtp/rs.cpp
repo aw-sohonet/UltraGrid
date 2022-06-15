@@ -408,6 +408,230 @@ bool rs::decode(char *in, int in_len, char **out, int *len,
         return true;
 }
 
+void rs::decodeAudio(FecChannel* channel) {
+        fec_decode((const fec_t*) this->state, (gf**) channel->getRecoverySegments(), (gf**) channel->getOutputSegments(), channel->getRecoveryIndex(), channel->getSegmentSize());
+}
+
+void rs::initialiseChannel(FecChannel& channel, uint32_t fecHeader) {
+    channel.setKBlocks(fecHeader >> 24);
+    channel.setMBlocks((fecHeader >> 16) & 0XFF);
+    channel.setSegmentSize(fecHeader & 0XFFFF);
+    channel.initialise();
+}
+
+FecChannel::FecChannel() : outputSize(0), outputCreated(false), initialised(false) {}
+
+FecChannel::FecChannel(int kBlocks, int mBlocks, int segmentSize) : kBlocks(kBlocks), mBlocks(mBlocks), segmentSize(segmentSize), outputSize(0), outputCreated(false) {
+    // Initialise the channel
+    this->initialise();
+}
+
+void FecChannel::initialise() {
+    this->initialised = true;
+    this->blockDelta = this->mBlocks - this->kBlocks;
+    // Allocate enough pointers to store an pointer to every channel segment
+    this->segments = (char**)calloc(this->kBlocks, sizeof(char*));
+    this->segmentIndexes = (unsigned int*)calloc(this->kBlocks, sizeof(unsigned int));
+    // Allocate enough pointers to store a pointer to every parity segment
+    this->paritySegments = (char**)calloc(this->blockDelta, sizeof(char*));
+    this->parityIndexes = (unsigned int*)calloc(this->blockDelta, sizeof(unsigned int));
+    // Allocate the memory for the recovery segments, recovery index, and output segments
+    this->recoverySegments = (char**)calloc(this->kBlocks, sizeof(char*));
+    this->recoveryIndex = (unsigned int*)calloc(this->kBlocks, sizeof(unsigned int));
+}
+
+FecChannel::~FecChannel() {
+    if(this->initialised) {
+        // Free the resources we allocated for pointing at
+        // the segments and indexes
+        free(this->segments);
+        free(this->segmentIndexes);
+        free(this->paritySegments);
+        free(this->parityIndexes);
+        free(this->recoverySegments);
+        free(this->recoveryIndex);
+        if(this->outputCreated) {
+            for(int i = 0; i < this->outputSize; i++) {
+                free(this->outputSegments[i]);
+            }
+            free(this->outputSegments);
+        }
+    }
+}
+
+void FecChannel::addBlock(char* data, size_t dataSize, size_t offset) {
+    // Calculate the number of segments given in the block of data
+    int segments = dataSize / this->segmentSize;
+    // Calculate the initial index of the data
+    int initialIndex = offset / this->segmentSize;
+    // Insert the indexes, and segments in
+    for(int i = 0; i < segments; i++) {
+        if((initialIndex + i) < this->kBlocks) {
+            // Calculate the new index (as this is a data segment)
+            int newIndex = initialIndex + i;
+            this->segments[newIndex] = data + (this->segmentSize * i);
+            this->segmentIndexes[newIndex] = initialIndex + i;
+        }
+        else {
+            // Calculate the new index (as this is a parity segment)
+            int newIndex = (initialIndex + i) - this->kBlocks;
+            this->paritySegments[newIndex] = data + (this->segmentSize * i);
+            this->parityIndexes[newIndex] = initialIndex + i;
+        }
+    }
+}
+
+FecRecoveryState FecChannel::generateRecovery() {
+    // Keep track of how many parity segments require usage
+    int parityCounter = 0;
+    for(int i = 0; i < this->kBlocks; i++) {
+        // Check if the segment is NULL or not (calloc sets all pointers to be zero / null)
+        if(this->segments[i]) {
+            this->recoverySegments[i] = this->segments[i];
+            this->recoveryIndex[i] = i;
+        }
+        // Since the segment has not been filled in, we replace it with a parity segment
+        else {
+            // Track whether or not the parity segment is set. If not, then there are not
+            // enough segments to recover the data
+            bool setParity = false;
+            do {
+                // Test to see if the parity segment has been set
+                if(this->paritySegments[parityCounter]) {
+                    this->recoverySegments[i] = this->paritySegments[parityCounter];
+                    this->recoveryIndex[i] = this->parityIndexes[parityCounter];
+                    
+                    // Increment the counter, so we know we have used a parity segment
+                    // when we look at the final outcome
+                    parityCounter++;
+                    setParity = true;
+                    break;
+                }
+                else {
+                    parityCounter++;
+                }
+            } while(parityCounter < blockDelta);
+
+            // If we were unable to set the parity segment then there are not enough segments set
+            // to recover the data
+            if(!setParity) {
+                return FecRecoveryState::FEC_UNRECOVERABLE;
+            }
+        }
+    }
+
+    // If no parity segments have been used then the recovery segments will be the complete the data
+    if(parityCounter == 0) {
+        return FecRecoveryState::FEC_COMPLETE;
+    }
+    // If we have used any parity segments, and have reached this far, then it is possible for the data
+    // to be recovered.
+    else {
+        // Since the data is recoverable there should be a need to generate additional output buffers.
+        this->outputSegments = (char**) calloc(parityCounter, sizeof(char*));
+        for(int i = 0; i < parityCounter; i++) {
+            this->outputSegments[i] = (char*) calloc(this->segmentSize, sizeof(char));
+        }
+        this->outputSize = parityCounter;
+        this->outputCreated = true;
+
+        return FecRecoveryState::FEC_RECOVERABLE;
+    }
+}
+
+void FecChannel::recover() {
+    // Check that the output has been created
+    if(outputCreated) {
+        int outputIndex = 0;
+        for(int i = 0; i < this->kBlocks; i++) {
+            // Check to see if the original data was in the index or not
+            if(this->segmentIndexes[i] != i) {
+                // This should not happen if the output has been created as it is
+                // sized to match the number of indexes which do not match their index. 
+                if(outputIndex >= this->outputSize) {
+                    return;
+                }
+                // Update the segments (and the indexes) to match the latest!
+                else {
+                    this->segments[i] = this->outputSegments[outputIndex];
+                    this->segmentIndexes[i] = i;
+                    outputIndex++;
+                }
+            }
+        }
+
+
+        // The output buffer is set to be the size it needs to be, so in order
+        // to recover all of the output buffer needs to be used
+        for(int i = 0; i < this->outputSize; i++) {
+        
+        }
+    }
+}
+
+char** FecChannel::getRecoverySegments() {
+    return this->recoverySegments;
+}
+
+unsigned int* FecChannel::getRecoveryIndex() {
+    return this->recoveryIndex;
+}
+
+char** FecChannel::getOutputSegments() {
+    return this->outputSegments;
+}
+
+void FecChannel::setKBlocks(int kBlocks) {
+    this->kBlocks = kBlocks;
+}
+
+int FecChannel::getKBlocks() {
+    return this->kBlocks;
+}
+
+void FecChannel::setMBlocks(int mBlocks) {
+    this->mBlocks = mBlocks;
+}
+
+int FecChannel::getMBlocks() {
+    return this->mBlocks;
+}
+
+char* FecChannel::operator[](std::size_t index) {
+    // If the index is within the kBlocks then, it's in
+    // a segment.
+    if(index < this->kBlocks) {
+        return this->segments[index];
+    }
+    // If it's outside of the kBlocks then it's likely within the
+    // parity segments.
+    else {
+        return this->paritySegments[index - this->kBlocks];
+    }
+}
+
+const char* FecChannel::operator[](std::size_t index) const {
+    if(index < this->kBlocks) {
+        return this->segments[index];
+    }
+    else {
+        return this->paritySegments[index - this->kBlocks];
+    }
+}
+
+char* FecChannel::getSegment(int index) {
+    // Use the operator for getting a segment from the class
+    return (*this)[index];
+}
+
+int FecChannel::getSegmentSize() {
+    return this->segmentSize;
+}
+
+void FecChannel::setSegmentSize(int segmentSize) {
+    this->segmentSize = segmentSize;
+}
+
 static void usage() {
         printf("RS usage:\n"
                         "\t-f rs[:<k>:<n>]\n"

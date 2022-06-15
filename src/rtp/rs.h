@@ -46,6 +46,8 @@
 
 struct video_frame;
 
+class FecChannel;
+
 struct rs : public fec {
         rs(unsigned int k, unsigned int n);
         rs(const char *cfg);
@@ -54,12 +56,79 @@ struct rs : public fec {
         virtual audio_frame2 encode(audio_frame2 const &) override;
         bool decode(char *in, int in_len, char **out, int *len,
                 const std::map<int, int> &) override;
+        void decodeAudio(FecChannel* channel);
+        static void initialiseChannel(FecChannel& channel, uint32_t fecHeader);
 
 private:
         int get_ss(int hdr_len, int len);
         uint32_t get_buf_len(const char *buf, std::map<int, int> const & c_m);
         void *state = nullptr;
+        /** param k the number of blocks required to reconstruct
+            param m the total number of blocks created
+            Currently both are limited to a max of 256 */
         unsigned int m_k, m_n;
+};
+
+enum FecRecoveryState {
+    FEC_COMPLETE,
+    FEC_RECOVERABLE,
+    FEC_UNRECOVERABLE
+};
+
+class FecChannel {
+public:
+        FecChannel();
+        FecChannel(int kBlocks, int mBlocks, int segmentSize);
+        ~FecChannel();
+        void initialise();
+        void addBlock(char* data, size_t dataSize, size_t offset);
+        FecRecoveryState generateRecovery();
+        void recover();
+        // Provide functions for access into the class
+        char* getSegment(int index);
+        char* operator[](std::size_t index);
+        const char* operator[](std::size_t index) const;
+
+        char** getRecoverySegments();
+        char** getOutputSegments();
+        unsigned int* getRecoveryIndex();
+        void setSegmentSize(int segmentSize);
+        int getSegmentSize();
+        void setKBlocks(int kBlocks);
+        int getKBlocks();
+        void setMBlocks(int mBlocks);
+        int getMBlocks();
+private:
+        bool initialised;
+        /**
+         *  K is the number of blocks required to reconstruct
+         *  M is the total number of blocks created
+         */
+        int kBlocks;
+        int mBlocks;
+        // We want to know how many parity segments to expect.
+        // The block delta also lets us know how many segments
+        // can contain errors in order to recover the data
+        int blockDelta;
+
+        // This is the byte size of each segment
+        int segmentSize;
+
+        // In order to reconstruct the channel data we need an array
+        // of all of the segments that we received. The segment indexes
+        // represent what the index of the segement is in the overall
+        // buffer
+        char** segments;
+        char** paritySegments;
+        unsigned int* segmentIndexes;
+        unsigned int* parityIndexes;
+        // It's nice to have a seperate list for constructing the decoding indexes
+        char** recoverySegments;
+        unsigned int* recoveryIndex;
+
+        char** outputSegments;
+        int outputSize;
+        bool outputCreated;
 };
 
 #endif /* __RS_H__ */
