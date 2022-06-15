@@ -568,6 +568,7 @@ FecRecoveryState FecChannel::generateRecovery() {
             }
         }
     }
+    LOG(LOG_LEVEL_VERBOSE) << "End Recovery\n";
 
     // If no parity segments have been used then the recovery segments will be the complete the data
     if(parityCounter == 0) {
