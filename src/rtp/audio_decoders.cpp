@@ -596,29 +596,29 @@ static bool audio_fec_decode_channels(struct pbuf_audio_data *s, vector<FecChann
                                 break;
                         }
                 }
-                // if (!audioDesc) {
-                //         uint32_t quant_sample_rate = 0;
-                //         uint32_t audio_tag = 0;
+                if (!audioDesc) {
+                        uint32_t quant_sample_rate = 0;
+                        uint32_t audio_tag = 0;
 
-                //         memcpy(&quant_sample_rate, (*fecChannel)[0] + 3 * sizeof(uint32_t), sizeof(uint32_t));
-                //         memcpy(&audio_tag, (*fecChannel)[0] + 4 * sizeof(uint32_t), sizeof(uint32_t));
-                //         quant_sample_rate = ntohl(quant_sample_rate);
-                //         audio_tag = ntohl(audio_tag);
+                        memcpy(&quant_sample_rate, fecChannel->getSegment(0) + (3 * sizeof(uint32_t)), sizeof(uint32_t));
+                        memcpy(&audio_tag, fecChannel->getSegment(0) + (4 * sizeof(uint32_t)), sizeof(uint32_t));
+                        quant_sample_rate = ntohl(quant_sample_rate);
+                        audio_tag = ntohl(audio_tag);
 
-                //         audioDesc.bps = (quant_sample_rate >> 26) / 8;
-                //         audioDesc.sample_rate = quant_sample_rate & 0x07FFFFFFU;
-                //         audioDesc.ch_count = fecChannelData.size();
-                //         audioDesc.codec = get_audio_codec_to_tag(audio_tag);
-                //         if (!audioDesc.codec) {
-                //                 auto flags = std::clog.flags();
-                //                 LOG(LOG_LEVEL_ERROR) << MOD_NAME << "Wrong AudioTag 0x" << hex << audio_tag << "\n";
-                //                 std::clog.setf(flags);
-                //         }
+                        audioDesc.bps = (quant_sample_rate >> 26) / 8;
+                        audioDesc.sample_rate = quant_sample_rate & 0x07FFFFFFU;
+                        audioDesc.ch_count = fecChannelData.size();
+                        audioDesc.codec = get_audio_codec_to_tag(audio_tag);
+                        if (!audioDesc.codec) {
+                                auto flags = std::clog.flags();
+                                LOG(LOG_LEVEL_ERROR) << MOD_NAME << "Wrong AudioTag 0x" << hex << audio_tag << "\n";
+                                std::clog.setf(flags);
+                        }
 
-                //         if (!audio_decoder_reconfigure(decoder, s, frame, audioDesc.ch_count, audioDesc.bps, audioDesc.sample_rate, audio_tag)) {
-                //                 return FALSE;
-                //         }
-                // }
+                        if (!audio_decoder_reconfigure(decoder, s, frame, audioDesc.ch_count, audioDesc.bps, audioDesc.sample_rate, audio_tag)) {
+                                return FALSE;
+                        }
+                }
                 // If we have reached this point then the data in the FEC Channels segments block is the correct data!
                 for(int i = 0; i < fecChannel->getKBlocks(); i++) {
                         frame.replace(channel, i * fecChannel->getSegmentSize(), (*fecChannel)[i], fecChannel->getSegmentSize());
@@ -791,12 +791,6 @@ int decode_audio_frame(struct coded_data *cdata, void *pbuf_data, struct pbuf_st
                         decoder->packet_counter = packet_counter_init(input_channels);
                 }
 
-                int bps = (ntohl(audio_hdr[3]) >> 26) / 8;
-                uint32_t audio_tag = ntohl(audio_hdr[4]);
-
-                if (!audio_decoder_reconfigure(decoder, s, received_frame, input_channels, bps, sample_rate, audio_tag)) {
-                        return FALSE;
-                }
                 if (PT_AUDIO_HAS_FEC(pt)) {
                         // This will be the first time we're processing a channel with FEC
                         if(!fecEnabled) {
@@ -826,6 +820,12 @@ int decode_audio_frame(struct coded_data *cdata, void *pbuf_data, struct pbuf_st
                         // fec_data[channel].second[offset] = length;
                         // memcpy(fec_data[channel].first.data() + offset, data, length);
                 } else {
+                        int bps = (ntohl(audio_hdr[3]) >> 26) / 8;
+                        uint32_t audio_tag = ntohl(audio_hdr[4]);
+
+                        if (!audio_decoder_reconfigure(decoder, s, received_frame, input_channels, bps, sample_rate, audio_tag)) {
+                                return FALSE;
+                        }
                         received_frame.replace(channel, offset, data, length);
 
                         /* buffer size same for every packet of the frame */
