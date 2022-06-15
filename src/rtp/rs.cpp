@@ -472,7 +472,7 @@ FecChannel::~FecChannel() {
 }
 
 void FecChannel::addBlock(char* data, size_t dataSize, size_t offset) {
-    LOG(LOG_LEVEL_VERBOSE) << "Size " << dataSize << " Offset " << offset;
+    LOG(LOG_LEVEL_VERBOSE) << "Size " << dataSize << " Offset " << offset << "\n";
     // Calculate the number of segments given in the block of data
     int segments = dataSize / this->segmentSize;
     // Calculate the initial index of the data
@@ -495,7 +495,7 @@ void FecChannel::addBlock(char* data, size_t dataSize, size_t offset) {
 }
 
 void FecChannel::addBlockCopy(char* data, size_t dataSize, size_t offset) {
-    LOG(LOG_LEVEL_VERBOSE) << "Size " << dataSize << " Offset " << offset;
+    LOG(LOG_LEVEL_VERBOSE) << "Size " << dataSize << " Offset " << offset << "\n";
     // Calculate the number of segments given in the block of data
     int segments = dataSize / this->segmentSize;
     // Calculate the initial index of the data
