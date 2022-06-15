@@ -792,12 +792,22 @@ int decode_audio_frame(struct coded_data *cdata, void *pbuf_data, struct pbuf_st
                 }
 
                 if (PT_AUDIO_HAS_FEC(pt)) {
+                        // This will be the first time we're processing a channel with FEC
+                        if(!fecEnabled) {
+                                // Resize the vector to the correct size, and
+                                // set all of the pointers to be NULL.
+                                fecChannels.resize(input_channels);
+                                for(int i = 0; i < input_channels; i++) {
+                                        fecChannels[i] = nullptr;
+                                }
+                        }
                         fecEnabled = true;
+                        
                         FecChannel* fecChannel;
-                        if(fecChannels.size() <= channel) {
+                        if(fecChannels[channel] == nullptr) {
                                 fecChannel = new FecChannel();
                                 rs::initialiseChannel(fecChannel, audio_hdr[3]);
-                                fecChannels.push_back(fecChannel);
+                                fecChannels[channel] = fecChannel;
                         }
                         else {
                                 fecChannel = fecChannels[channel];

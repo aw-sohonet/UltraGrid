@@ -43,6 +43,7 @@
 
 #include <bitset>
 #include <stdlib.h>
+#include <climits>
 
 #include "debug.h"
 #include "rtp/rs.h"
@@ -431,16 +432,22 @@ void FecChannel::initialise() {
     this->blockDelta = this->mBlocks - this->kBlocks;
     // Allocate enough pointers to store an pointer to every channel segment
     this->segments = (char**)calloc(this->kBlocks, sizeof(char*));
+    this->segmentIndexes = (unsigned int*)calloc(this->kBlocks, sizeof(unsigned int));
     for(int i = 0; i < this->kBlocks; i++) {
         this->segments[i] = (char *)calloc(this->segmentSize, sizeof(char));
+        // Set all of the indexes to be UINT_MAX. This will be used to see if the segment
+        // has been set or not.
+        this->segmentIndexes[i] = UINT_MAX;
     }
-    this->segmentIndexes = (unsigned int*)calloc(this->kBlocks, sizeof(unsigned int));
     // Allocate enough pointers to store a pointer to every parity segment
     this->paritySegments = (char**)calloc(this->blockDelta, sizeof(char*));
+    this->parityIndexes = (unsigned int*)calloc(this->blockDelta, sizeof(unsigned int));
     for(int i = 0; i < this->blockDelta; i++) {
         this->paritySegments[i] = (char *)calloc(this->segmentSize, sizeof(char));
+        // Set all of the indexes to be UINT_MAX. This will be used to see if the segment
+        // has been set or not.
+        this->parityIndexes[i] = UINT_MAX;
     }
-    this->parityIndexes = (unsigned int*)calloc(this->blockDelta, sizeof(unsigned int));
     // Allocate the memory for the recovery segments, recovery index, and output segments
     this->recoverySegments = (char**)calloc(this->kBlocks, sizeof(char*));
     this->recoveryIndex = (unsigned int*)calloc(this->kBlocks, sizeof(unsigned int));
@@ -522,8 +529,8 @@ FecRecoveryState FecChannel::generateRecovery() {
     // Keep track of how many parity segments require usage
     int parityCounter = 0;
     for(int i = 0; i < this->kBlocks; i++) {
-        // Check if the segment is NULL or not (calloc sets all pointers to be zero / null)
-        if(this->segments[i]) {
+        // Check if the segment index is UINT_MAX. If so, then it has NOT been set
+        if(this->segmentIndexes[i] != UINT_MAX) {
             this->recoverySegments[i] = this->segments[i];
             this->recoveryIndex[i] = i;
         }
@@ -534,7 +541,7 @@ FecRecoveryState FecChannel::generateRecovery() {
             bool setParity = false;
             do {
                 // Test to see if the parity segment has been set
-                if(this->paritySegments[parityCounter]) {
+                if(this->parityIndexes[parityCounter] != UINT_MAX) {
                     this->recoverySegments[i] = this->paritySegments[parityCounter];
                     this->recoveryIndex[i] = this->parityIndexes[parityCounter];
                     
@@ -667,6 +674,10 @@ int FecChannel::getSegmentSize() {
 
 void FecChannel::setSegmentSize(int segmentSize) {
     this->segmentSize = segmentSize;
+}
+
+bool FecChannel::getInitialised() {
+    return this->initialised;
 }
 
 static void usage() {
