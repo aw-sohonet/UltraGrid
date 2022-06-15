@@ -518,7 +518,7 @@ void FecChannel::addBlockCopy(char* data, size_t dataSize, size_t offset) {
         }
         else {
             // Calculate the new index (as this is a parity segment)
-            int newIndex = (initialIndex + i) - this->kBlocks - 1;
+            int newIndex = (initialIndex + i) - this->kBlocks;
             LOG(LOG_LEVEL_VERBOSE) << "New Index (Parity) " << newIndex << "\n";
             memcpy(this->paritySegments[newIndex], data + (this->segmentSize * i), this->segmentSize);
             this->parityIndexes[newIndex] = initialIndex + i;
