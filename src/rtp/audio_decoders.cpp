@@ -620,7 +620,9 @@ static bool audio_fec_decode_channels(struct pbuf_audio_data *s, vector<FecChann
                         }
                 }
                 // If we have reached this point then the data in the FEC Channels segments block is the correct data!
-                for(int i = 0; i < fecChannel->getKBlocks(); i++) {
+                // The first part of the data needs the audio header and data length removed from it (audio header is 5 32bit ints. data length is 1 32bit int).
+                frame.replace(channel, 0, fecChannel->getSegment(0) + (sizeof(uint32_t) * 6), fecChannel->getSegmentSize() - (sizeof(uint32_t) * 6));
+                for(int i = 1; i < fecChannel->getKBlocks(); i++) {
                         frame.replace(channel, i * fecChannel->getSegmentSize(), (*fecChannel)[i], fecChannel->getSegmentSize());
                 }
         }
