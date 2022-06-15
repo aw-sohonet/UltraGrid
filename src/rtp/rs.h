@@ -57,7 +57,7 @@ struct rs : public fec {
         bool decode(char *in, int in_len, char **out, int *len,
                 const std::map<int, int> &) override;
         void decodeAudio(FecChannel* channel);
-        static void initialiseChannel(FecChannel& channel, uint32_t fecHeader);
+        static void initialiseChannel(FecChannel* channel, uint32_t fecHeader);
 
 private:
         int get_ss(int hdr_len, int len);

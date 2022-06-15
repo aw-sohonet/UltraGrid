@@ -412,11 +412,11 @@ void rs::decodeAudio(FecChannel* channel) {
         fec_decode((const fec_t*) this->state, (gf**) channel->getRecoverySegments(), (gf**) channel->getOutputSegments(), channel->getRecoveryIndex(), channel->getSegmentSize());
 }
 
-void rs::initialiseChannel(FecChannel& channel, uint32_t fecHeader) {
-    channel.setKBlocks(fecHeader >> 24);
-    channel.setMBlocks((fecHeader >> 16) & 0XFF);
-    channel.setSegmentSize(fecHeader & 0XFFFF);
-    channel.initialise();
+void rs::initialiseChannel(FecChannel* channel, uint32_t fecHeader) {
+    channel->setKBlocks(fecHeader >> 24);
+    channel->setMBlocks((fecHeader >> 16) & 0XFF);
+    channel->setSegmentSize(fecHeader & 0XFFFF);
+    channel->initialise();
 }
 
 FecChannel::FecChannel() : outputSize(0), outputCreated(false), initialised(false) {}

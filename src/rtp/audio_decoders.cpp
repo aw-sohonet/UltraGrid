@@ -558,7 +558,7 @@ static bool audio_decoder_reconfigure(struct state_audio_decoder *decoder, struc
         return true;
 }
 
-static bool audio_fec_decode_channels(struct pbuf_audio_data *s, vector<FecChannel> fecChannelData, audio_frame2 &frame) {
+static bool audio_fec_decode_channels(struct pbuf_audio_data *s, vector<FecChannel*> fecChannelData, audio_frame2 &frame) {
         // Check that there is data to process
         if(fecChannelData.size() == 0) {
                 LOG(LOG_LEVEL_ERROR) << "FEC is enabled, but there is no channel data to process\n";
@@ -569,14 +569,14 @@ static bool audio_fec_decode_channels(struct pbuf_audio_data *s, vector<FecChann
         struct state_audio_decoder *decoder = s->decoder;
         if(decoder->rs_state == NULL) {
                 // Use the data from the first instance. It should all be the same
-                decoder->rs_state = new rs(fecChannelData[0].getKBlocks(), fecChannelData[0].getMBlocks());
+                decoder->rs_state = new rs(fecChannelData[0]->getKBlocks(), fecChannelData[0]->getMBlocks());
         }
 
         audio_desc audioDesc{};
 
         // Iterate through each channel and decode the FEC output
         for(int channel = 0; channel < fecChannelData.size(); channel++) {
-                FecChannel* fecChannel = &fecChannelData[channel];
+                FecChannel* fecChannel = fecChannelData[channel];
                 // Organise the data ready for recovery
                 FecRecoveryState fecState = fecChannel->generateRecovery();
                 switch(fecState) {
@@ -708,7 +708,7 @@ int decode_audio_frame(struct coded_data *cdata, void *pbuf_data, struct pbuf_st
                         decoder->saved_desc.bps,
                         decoder->saved_desc.sample_rate);
         // vector<pair<vector<char>, map<int, int>>> fec_data;
-        vector<FecChannel> fecChannels;
+        vector<FecChannel*> fecChannels;
         bool fecEnabled = false;
 
         while (cdata != NULL) {
@@ -793,16 +793,16 @@ int decode_audio_frame(struct coded_data *cdata, void *pbuf_data, struct pbuf_st
 
                 if (PT_AUDIO_HAS_FEC(pt)) {
                         fecEnabled = true;
-                        FecChannel fecChannel;
+                        FecChannel* fecChannel;
                         if(fecChannels.size() <= channel) {
-                                fecChannel = FecChannel();
+                                fecChannel = new FecChannel();
                                 rs::initialiseChannel(fecChannel, audio_hdr[3]);
                                 fecChannels.push_back(fecChannel);
                         }
                         else {
                                 fecChannel = fecChannels[channel];
                         }
-                        fecChannel.addBlock(data, length, offset);
+                        fecChannel->addBlock(data, length, offset);
 
                         // fec_data.resize(input_channels);
                         // fec_data[channel].first.resize(buffer_len);
