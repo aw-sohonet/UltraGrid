@@ -510,9 +510,10 @@ void FecChannel::addBlockCopy(char* data, size_t dataSize, size_t offset) {
         if((initialIndex + i) < this->kBlocks) {
             // Calculate the new index (as this is a data segment)
             int newIndex = initialIndex + i;
+            LOG(LOG_LEVEL_VERBOSE) << "New Index " << newIndex << "\n";
             // Instead of taking a reference, allocate the memory and copy it in.
             memcpy(this->segments[newIndex], data + (this->segmentSize * i), this->segmentSize);
-            this->segmentIndexes[newIndex] = initialIndex + i;
+            this->segmentIndexes[newIndex] = newIndex;
         }
         else {
             // Calculate the new index (as this is a parity segment)
