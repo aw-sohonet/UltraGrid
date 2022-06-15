@@ -600,8 +600,8 @@ static bool audio_fec_decode_channels(struct pbuf_audio_data *s, vector<FecChann
                         uint32_t quant_sample_rate = 0;
                         uint32_t audio_tag = 0;
 
-                        memcpy(&quant_sample_rate, fecChannel->getSegment(0) + (3 * sizeof(uint32_t)), sizeof(uint32_t));
-                        memcpy(&audio_tag, fecChannel->getSegment(0) + (4 * sizeof(uint32_t)), sizeof(uint32_t));
+                        memcpy(&quant_sample_rate, fecChannel->getSegment(0) + (4 * sizeof(uint32_t)), sizeof(uint32_t));
+                        memcpy(&audio_tag, fecChannel->getSegment(0) + (5 * sizeof(uint32_t)), sizeof(uint32_t));
                         quant_sample_rate = ntohl(quant_sample_rate);
                         audio_tag = ntohl(audio_tag);
 
