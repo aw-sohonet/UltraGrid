@@ -505,13 +505,11 @@ void FecChannel::addBlockCopy(char* data, size_t dataSize, size_t offset) {
     int segments = dataSize / this->segmentSize;
     // Calculate the initial index of the data
     int initialIndex = offset / this->segmentSize;
-    LOG(LOG_LEVEL_VERBOSE) << "Initial Index " << initialIndex << " Data Size " << dataSize << " Segments " << segments << " Segment Size " << this->segmentSize << " Offset " << offset << "\n";
     // Insert the indexes, and segments in
     for(int i = 0; i < segments; i++) {
         if((initialIndex + i) < this->kBlocks) {
             // Calculate the new index (as this is a data segment)
             int newIndex = initialIndex + i;
-            LOG(LOG_LEVEL_VERBOSE) << "New Index " << newIndex << "\n";
             // Instead of taking a reference, allocate the memory and copy it in.
             memcpy(this->segments[newIndex], data + (this->segmentSize * i), this->segmentSize);
             this->segmentIndexes[newIndex] = newIndex;
@@ -519,7 +517,6 @@ void FecChannel::addBlockCopy(char* data, size_t dataSize, size_t offset) {
         else {
             // Calculate the new index (as this is a parity segment)
             int newIndex = (initialIndex + i) - this->kBlocks;
-            LOG(LOG_LEVEL_VERBOSE) << "New Index (Parity) " << newIndex << "\n";
             memcpy(this->paritySegments[newIndex], data + (this->segmentSize * i), this->segmentSize);
             this->parityIndexes[newIndex] = initialIndex + i;
         }
@@ -527,14 +524,11 @@ void FecChannel::addBlockCopy(char* data, size_t dataSize, size_t offset) {
 }
 
 FecRecoveryState FecChannel::generateRecovery() {
-    LOG(LOG_LEVEL_VERBOSE) << "Begin Recovery\n";
     // Keep track of how many parity segments require usage
     int parityCounter = 0;
     for(int i = 0; i < this->kBlocks; i++) {
-        LOG(LOG_LEVEL_VERBOSE) << "Recovery Loop " << i << "\n";
         // Check if the segment index is UINT_MAX. If so, then it has NOT been set
         if(this->segmentIndexes[i] != UINT_MAX) {
-            LOG(LOG_LEVEL_VERBOSE) << "Setting segment " << i << "\n";
             this->recoverySegments[i] = this->segments[i];
             this->recoveryIndex[i] = i;
         }
@@ -543,13 +537,11 @@ FecRecoveryState FecChannel::generateRecovery() {
             // Track whether or not the parity segment is set. If not, then there are not
             // enough segments to recover the data
             bool setParity = false;
-            LOG(LOG_LEVEL_VERBOSE) << "Using parity " << i << "\n";
-            do {
+            while(parityCounter < this->blockDelta) {
                 // Test to see if the parity segment has been set
                 if(this->parityIndexes[parityCounter] != UINT_MAX) {
                     this->recoverySegments[i] = this->paritySegments[parityCounter];
-                    this->recoveryIndex[i] = this->parityIndexes[parityCounter];
-                    
+                    this->recoveryIndex[i] = this->parityIndexes[parityCounter];                    
                     // Increment the counter, so we know we have used a parity segment
                     // when we look at the final outcome
                     parityCounter++;
@@ -559,7 +551,7 @@ FecRecoveryState FecChannel::generateRecovery() {
                 else {
                     parityCounter++;
                 }
-            } while(parityCounter < blockDelta);
+            }
 
             // If we were unable to set the parity segment then there are not enough segments set
             // to recover the data
@@ -568,7 +560,6 @@ FecRecoveryState FecChannel::generateRecovery() {
             }
         }
     }
-    LOG(LOG_LEVEL_VERBOSE) << "End Recovery\n";
 
     // If no parity segments have been used then the recovery segments will be the complete the data
     if(parityCounter == 0) {
