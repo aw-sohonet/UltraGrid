@@ -505,6 +505,7 @@ void FecChannel::addBlockCopy(char* data, size_t dataSize, size_t offset) {
     int segments = dataSize / this->segmentSize;
     // Calculate the initial index of the data
     int initialIndex = offset / this->segmentSize;
+    LOG(LOG_LEVEL_VERBOSE) << "Initial Index " << initialIndex << " Data Size " << dataSize << " Segments" << segments << " Segment Size " << this->segmentSize << "\n";
     // Insert the indexes, and segments in
     for(int i = 0; i < segments; i++) {
         if((initialIndex + i) < this->kBlocks) {
