@@ -99,6 +99,7 @@ public:
         int getKBlocks();
         void setMBlocks(int mBlocks);
         int getMBlocks();
+        bool getInitialised();
 private:
         bool initialised;
         /**
