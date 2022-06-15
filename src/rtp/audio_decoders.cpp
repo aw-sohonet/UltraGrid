@@ -569,7 +569,7 @@ static bool audio_fec_decode_channels(struct pbuf_audio_data *s, vector<FecChann
         struct state_audio_decoder *decoder = s->decoder;
         if(decoder->rs_state == NULL) {
                 // Use the data from the first instance. It should all be the same
-                decoder->rs_state = new rs(fecChannelData[0]->getKBlocks(), fecChannelData[0]->getMBlocks());
+                decoder->rs_state = new rs(fecChannelData[0]->getKBlocks(), fecChannelData[0]->getMBlocks() + fecChannelData[0]->getKBlocks());
         }
 
         audio_desc audioDesc{};
