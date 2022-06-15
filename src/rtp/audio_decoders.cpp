@@ -621,7 +621,7 @@ static bool audio_fec_decode_channels(struct pbuf_audio_data *s, vector<FecChann
                         }
                 }
                 for(int i = 0; i < fecChannel->getKBlocks(); i++) {
-                        frame.append(channel, (*fecChannel)[i], fecChannel->getSegmentSize());
+                        frame.replace(channel, i * fecChannel->getSegmentSize(), (*fecChannel)[i], fecChannel->getSegmentSize());
                 }
         }
         return TRUE;
