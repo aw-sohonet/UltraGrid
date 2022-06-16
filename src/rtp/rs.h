@@ -49,7 +49,7 @@ struct video_frame;
 class FecChannel;
 
 struct rs : public fec {
-        rs(unsigned int k, unsigned int n);
+        rs(unsigned int k, unsigned int n, unsigned int mult);
         rs(const char *cfg);
         virtual ~rs();
         std::shared_ptr<video_frame> encode(std::shared_ptr<video_frame> frame) override;
@@ -65,8 +65,10 @@ private:
         void *state = nullptr;
         /** param k the number of blocks required to reconstruct
             param m the total number of blocks created
-            Currently both are limited to a max of 256 */
-        unsigned int m_k, m_n;
+            Currently both are limited to a max of 256.
+            The multiplication factor is used for how many segments should
+            be sent in a single packet. */
+        unsigned int m_k, m_n, m_mult;
 };
 
 enum FecRecoveryState {
