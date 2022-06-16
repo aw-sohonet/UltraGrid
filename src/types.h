@@ -173,7 +173,7 @@ struct fec_desc {
                         unsigned int c_ = 0,
                         unsigned int seed_ = 0,
                         unsigned int ss_ = 0,
-                        unsigned int mult_) : type(type_), k(k_), m(m_), c(c_), seed(seed_), symbol_size(ss_), mult(mult_) {}
+                        unsigned int mult_ = 0) : type(type_), k(k_), m(m_), c(c_), seed(seed_), symbol_size(ss_), mult(mult_) {}
 #endif
 };
 
