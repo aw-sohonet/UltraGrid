@@ -754,6 +754,7 @@ void audio_tx_send(struct tx* tx, struct rtp *rtp_session, const audio_frame2 * 
                 int rtp_hdr_len = 0;
                 int hdrs_len = (rtp_is_ipv6(rtp_session) ? 40 : 20) + 8 + 12; // MTU - IP hdr - UDP hdr - RTP hdr - payload_hdr
                 unsigned int fec_symbol_size = buffer->get_fec_params(channel).symbol_size;
+                unsigned int fecMultFactor = buffer->get_fec_params(channel).mult;
 
                 chan_data = buffer->get_data(channel);
                 unsigned pos = 0u;
@@ -846,10 +847,11 @@ void audio_tx_send(struct tx* tx, struct rtp *rtp_session, const audio_frame2 * 
                         }
 
                         LOG(LOG_LEVEL_VERBOSE) << "FEC SYMBOL SIZE: " << fec_symbol_size << "\n";
+                        LOG(LOG_LEVEL_VERBOSE) << "FEC MULTIPLICATION FACTOR: " << fecMultFactor << "\n";
                         // If we are using Reed Sollomon then we want to ensure that the packets we
                         // are sending are a multiple of the size of the FEC symbols.
-                        if(tx->fec_scheme == FEC_RS && fec_symbol_size * 4 < tx->mtu - hdrs_len) {
-                                data_len = fec_symbol_size * 4;
+                        if(tx->fec_scheme == FEC_RS && fec_symbol_size * fecMultFactor < tx->mtu - hdrs_len) {
+                                data_len = fec_symbol_size * fecMultFactor;
                         }
                         else {
                                 data_len = tx->mtu - hdrs_len;

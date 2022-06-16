@@ -568,8 +568,9 @@ static bool audio_fec_decode_channels(struct pbuf_audio_data *s, vector<FecChann
         // Create the decoder if it does not exist
         struct state_audio_decoder *decoder = s->decoder;
         if(decoder->rs_state == NULL) {
-                // Use the data from the first instance. It should all be the same
-                decoder->rs_state = new rs(fecChannelData[0]->getKBlocks(), fecChannelData[0]->getMBlocks() + fecChannelData[0]->getKBlocks());
+                // Use the data from the first instance. It should all be the same. Don't worry about the
+                // multiplication as it's not relevant when decoding
+                decoder->rs_state = new rs(fecChannelData[0]->getKBlocks(), fecChannelData[0]->getMBlocks() + fecChannelData[0]->getKBlocks(), 1);
         }
 
         audio_desc audioDesc{};
@@ -581,7 +582,7 @@ static bool audio_fec_decode_channels(struct pbuf_audio_data *s, vector<FecChann
                 FecRecoveryState fecState = fecChannel->generateRecovery();
                 switch(fecState) {
                         case FecRecoveryState::FEC_COMPLETE: {
-                                LOG(LOG_LEVEL_VERBOSE) << MOD_NAME << "Received all of the data for the channel\n";
+                                LOG(LOG_LEVEL_DEBUG) << MOD_NAME << "Received all of the data for the channel\n";
                                 break;
                         }
                         case FecRecoveryState::FEC_UNRECOVERABLE: {

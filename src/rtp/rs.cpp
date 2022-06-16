@@ -54,6 +54,7 @@
 
 #define DEFAULT_K 200
 #define DEFAULT_N 240
+#define DEFAULT_MULT 1
 
 #define MAX_K 255
 #define MAX_N 255
@@ -75,9 +76,10 @@ using namespace std;
  * Constructs RS state. Since this constructor is currently used only for the decoder,
  * it allows creation of dummy state even if zfec was not compiled in.
  */
-rs::rs(unsigned int k, unsigned int n)
-        : m_k(k), m_n(n)
+rs::rs(unsigned int k, unsigned int n, unsigned int mult)
+        : m_k(k), m_n(n), m_mult(mult)
 {
+        assert (mult != 0);
         assert (k <= MAX_K);
         assert (n <= MAX_N);
         assert (m_k <= m_n);
@@ -103,9 +105,21 @@ rs::rs(const char *c_cfg)
                 item = strtok_r(NULL, ":", &save_ptr);
                 assert(item != NULL);
                 m_n = atoi(item);
+                // See if a multiplication has been defined
+                item = strtok_r(NULL, ":", &save_ptr);
+                if(item != NULL) {
+                        m_mult = atoi(item);
+                }
+                // Default and check that m_mult is not a negative or zero
+                // as this would cause the code to break
+                if(item == NULL || m_mult <= 0) {
+                        m_mult = DEFAULT_MULT;
+                }
+                LOG(LOG_LEVEL_INFO) << "RS Mult is set to: " << m_mult << "\n";
         } else {
                 m_k = DEFAULT_K;
                 m_n = DEFAULT_N;
+                m_mult = DEFAULT_MULT;
         }
         free(cfg);
         if (m_k > MAX_K || m_n > MAX_N || m_k >= m_n) {
@@ -217,7 +231,7 @@ audio_frame2 rs::encode(const audio_frame2 &in)
                 out.resize(i, buffer_len);
                 memset(out.get_data(i) + sizeof(len32) + hdr_len + len, 0, ss * m_k - (sizeof(len32) + hdr_len + len));
 
-                out.set_fec_params(i, fec_desc(FEC_RS, m_k, m_n - m_k, 0, 0, ss));
+                out.set_fec_params(i, fec_desc(FEC_RS, m_k, m_n - m_k, 0, 0, ss, m_mult));
 
                 void *src[m_k];
                 for (unsigned int k = 0; k < m_k; ++k) {
