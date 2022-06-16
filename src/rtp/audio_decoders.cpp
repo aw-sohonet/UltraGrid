@@ -598,25 +598,27 @@ static bool audio_fec_decode_channels(struct pbuf_audio_data *s, vector<FecChann
                         }
                 }
                 if (!audioDesc) {
-                        uint32_t quant_sample_rate = 0;
-                        uint32_t audio_tag = 0;
+                        uint32_t audioHdrTuple = 0;
+                        uint32_t audioTag = 0;
 
-                        memcpy(&quant_sample_rate, fecChannel->getSegment(0) + (4 * sizeof(uint32_t)), sizeof(uint32_t));
-                        memcpy(&audio_tag, fecChannel->getSegment(0) + (5 * sizeof(uint32_t)), sizeof(uint32_t));
-                        quant_sample_rate = ntohl(quant_sample_rate);
-                        audio_tag = ntohl(audio_tag);
+                        // Extract the audio tag, sample rate, and BPS from the audio header attached to the front of
+                        // the data. Ensure to flip the data before inserting it into the 
+                        memcpy(&audioHdrTuple, fecChannel->getSegment(0) + (4 * sizeof(uint32_t)), sizeof(uint32_t));
+                        memcpy(&audioTag, fecChannel->getSegment(0) + (5 * sizeof(uint32_t)), sizeof(uint32_t));
+                        audioHdrTuple = ntohl(audioHdrTuple);
+                        audioTag = ntohl(audioTag);
 
-                        audioDesc.bps = (quant_sample_rate >> 26) / 8;
-                        audioDesc.sample_rate = quant_sample_rate & 0x07FFFFFFU;
+                        audioDesc.bps = (audioHdrTuple >> 26) / 8;
+                        audioDesc.sample_rate = audioHdrTuple & 0x07FFFFFFU;
                         audioDesc.ch_count = fecChannelData.size();
-                        audioDesc.codec = get_audio_codec_to_tag(audio_tag);
+                        audioDesc.codec = get_audio_codec_to_tag(audioTag);
                         if (!audioDesc.codec) {
                                 auto flags = std::clog.flags();
-                                LOG(LOG_LEVEL_ERROR) << MOD_NAME << "Wrong AudioTag 0x" << hex << audio_tag << "\n";
+                                LOG(LOG_LEVEL_ERROR) << MOD_NAME << "Wrong AudioTag 0x" << hex << audioTag << "\n";
                                 std::clog.setf(flags);
                         }
 
-                        if (!audio_decoder_reconfigure(decoder, s, frame, audioDesc.ch_count, audioDesc.bps, audioDesc.sample_rate, audio_tag)) {
+                        if (!audio_decoder_reconfigure(decoder, s, frame, audioDesc.ch_count, audioDesc.bps, audioDesc.sample_rate, audioTag)) {
                                 return FALSE;
                         }
                 }
@@ -651,59 +653,6 @@ static bool audio_fec_decode_channels(struct pbuf_audio_data *s, vector<FecChann
         return true;
 }
 
-// static bool audio_fec_decode(struct pbuf_audio_data *s, vector<pair<vector<char>, map<int, int>>> &fec_data, uint32_t fec_params, audio_frame2 &received_frame)
-// {
-//         struct state_audio_decoder *decoder = s->decoder;
-//         fec_desc fec_desc { FEC_RS, fec_params >> 19U, (fec_params >> 6U) & 0x1FFFU, fec_params & 0x3F };
-
-//         if (decoder->fec_state == NULL || decoder->fec_state_desc.k != fec_desc.k || decoder->fec_state_desc.m != fec_desc.m || decoder->fec_state_desc.c != fec_desc.c) {
-//                 delete decoder->fec_state;
-//                 decoder->fec_state = fec::create_from_desc(fec_desc);
-//                 if (decoder->fec_state == nullptr) {
-//                         LOG(LOG_LEVEL_ERROR) << MOD_NAME << "Cannot initialize FEC decoder!\n";
-//                         return false;
-//                 }
-//                 decoder->fec_state_desc = fec_desc;
-//         }
-
-//         audio_desc desc{};
-
-//         int channel = 0;
-//         for (auto & c : fec_data) {
-//                 char *out = nullptr;
-//                 int out_len = 0;
-//                 LOG(LOG_LEVEL_VERBOSE) << "FEC DECODE";
-//                 if (decoder->fec_state->decode(c.first.data(), c.first.size(), &out, &out_len, c.second)) {
-//                         if (!desc) {
-//                                 uint32_t quant_sample_rate = 0;
-//                                 uint32_t audio_tag = 0;
-
-//                                 memcpy(&quant_sample_rate, out + 3 * sizeof(uint32_t), sizeof(uint32_t));
-//                                 memcpy(&audio_tag, out + 4 * sizeof(uint32_t), sizeof(uint32_t));
-//                                 quant_sample_rate = ntohl(quant_sample_rate);
-//                                 audio_tag = ntohl(audio_tag);
-
-//                                 desc.bps = (quant_sample_rate >> 26) / 8;
-//                                 desc.sample_rate = quant_sample_rate & 0x07FFFFFFU;
-//                                 desc.ch_count = fec_data.size();
-//                                 desc.codec = get_audio_codec_to_tag(audio_tag);
-//                                 if (!desc.codec) {
-//                                         auto flags = std::clog.flags();
-//                                         LOG(LOG_LEVEL_ERROR) << MOD_NAME << "Wrong AudioTag 0x" << hex << audio_tag << "\n";
-//                                         std::clog.setf(flags);
-//                                 }
-
-//                                 if (!audio_decoder_reconfigure(decoder, s, received_frame, desc.ch_count, desc.bps, desc.sample_rate, audio_tag)) {
-//                                         return FALSE;
-//                                 }
-//                         }
-//                         received_frame.replace(channel, 0, out + sizeof(audio_payload_hdr_t), out_len - sizeof(audio_payload_hdr_t));
-//                 }
-//                 channel += 1;
-//         }
-
-//         return true;
-// }
 
 int decode_audio_frame(struct coded_data *cdata, void *pbuf_data, struct pbuf_stats *)
 {
@@ -731,7 +680,6 @@ int decode_audio_frame(struct coded_data *cdata, void *pbuf_data, struct pbuf_st
                         get_audio_codec_to_tag(decoder->saved_audio_tag),
                         decoder->saved_desc.bps,
                         decoder->saved_desc.sample_rate);
-        // vector<pair<vector<char>, map<int, int>>> fec_data;
         vector<FecChannel*> fecChannels;
         bool fecEnabled = false;
 
@@ -828,6 +776,7 @@ int decode_audio_frame(struct coded_data *cdata, void *pbuf_data, struct pbuf_st
                         fecEnabled = true;
                         
                         FecChannel* fecChannel;
+                        // Initialise the fec channel for this channel if it hasn't been already
                         if(fecChannels[channel] == nullptr) {
                                 fecChannel = new FecChannel();
                                 rs::initialiseChannel(fecChannel, ntohl(audio_hdr[3]));
@@ -836,13 +785,8 @@ int decode_audio_frame(struct coded_data *cdata, void *pbuf_data, struct pbuf_st
                         else {
                                 fecChannel = fecChannels[channel];
                         }
+                        // Store the block from this channel inside of the fec channel ready for decoding
                         fecChannel->addBlockCopy(data, length, offset);
-
-                        // fec_data.resize(input_channels);
-                        // fec_data[channel].first.resize(buffer_len);
-                        // fec_params = ntohl(audio_hdr[3]);
-                        // fec_data[channel].second[offset] = length;
-                        // memcpy(fec_data[channel].first.data() + offset, data, length);
                 } else {
                         int bps = (ntohl(audio_hdr[3]) >> 26) / 8;
                         uint32_t audio_tag = ntohl(audio_hdr[4]);
@@ -872,9 +816,6 @@ int decode_audio_frame(struct coded_data *cdata, void *pbuf_data, struct pbuf_st
 
         if (fecEnabled) {
                 std::chrono::high_resolution_clock::time_point preFec = std::chrono::high_resolution_clock::now();
-                // if (!audio_fec_decode(s, fec_data, fec_params, received_frame)) {
-                //         return FALSE;
-                // }
                 if(!audio_fec_decode_channels(s, fecChannels, received_frame)) {
                         return FALSE;
                 }
