@@ -845,10 +845,10 @@ void audio_tx_send(struct tx* tx, struct rtp *rtp_session, const audio_frame2 * 
                         if(tx->fec_scheme == FEC_MULT) {
                                 pos = mult_pos[mult_index];
                         }
-                        
+
                         // If we are using Reed Sollomon then we want to ensure that the packets we
                         // are sending are a multiple of the size of the FEC symbols.
-                        if(tx->fec_scheme == FEC_RS && fec_symbol_size * fecMultFactor < tx->mtu - hdrs_len) {
+                        if(tx->fec_scheme == FEC_RS && fec_symbol_size * fecMultFactor <= tx->mtu - hdrs_len) {
                                 data_len = fec_symbol_size * fecMultFactor;
                         }
                         else {
