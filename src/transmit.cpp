@@ -801,9 +801,12 @@ void audio_tx_send(struct tx* tx, struct rtp *rtp_session, const audio_frame2 * 
                                         buffer->get_fec_params(channel).k << 24 |
                                         buffer->get_fec_params(channel).m << 16 |
                                         // Knowing the symbol size when it arrives is very important
-                                        // as it will help with splitting up the data appropiately. 16 bits
-                                        // allows for a symbol size up to the same size as a UDP packet (65535).
-                                        buffer->get_fec_params(channel).symbol_size);
+                                        // as it will help with splitting up the data appropiately. 12 bits
+                                        // allows for a symbol size up to the same size as a UDP packet (4096).
+                                        buffer->get_fec_params(channel).symbol_size << 4
+                                        // If every FEC packet knows the channel count, then receiving the M-bit
+                                        // packet is not crucial to the entire frame being processed.
+                                        buffer->get_channel_count() - 1);
                         rtp_hdr[4] = htonl(buffer->get_fec_params(channel).seed);
                 }
 
@@ -906,14 +909,14 @@ void audio_tx_send(struct tx* tx, struct rtp *rtp_session, const audio_frame2 * 
                                                 mult_index = (mult_index + 1) % tx->mult_count;
                         }
 
-                        // if (pos < buffer->get_data_len(channel)) {
-                        //         do {
-                        //                 GET_STOPTIME;
-                        //                 GET_DELTA;
-                        //                 if (delta < 0)
-                        //                         delta += 1000000000L;
-                        //         } while (packet_rate - delta > 0);
-                        // }
+                        if (pos < buffer->get_data_len(channel)) {
+                                do {
+                                        GET_STOPTIME;
+                                        GET_DELTA;
+                                        if (delta < 0)
+                                                delta += 1000000000L;
+                                } while (packet_rate - delta > 0);
+                        }
 
                         /* when trippling, we need all streams goes to end */
                         if(tx->fec_scheme == FEC_MULT) {
