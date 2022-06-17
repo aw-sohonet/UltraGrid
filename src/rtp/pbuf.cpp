@@ -444,6 +444,7 @@ void pbuf_insert(struct pbuf *playout_buf, rtp_packet * pkt)
                         playout_buf->last->completed = true;
                         tmp->prv = playout_buf->last;
                         playout_buf->last = tmp;
+                        LOG(LOG_LEVEL_VERBOSE) << "marked as complete new frame\n";
                 } else {
                         bool discard_pkt = false;
                         /* Packet belongs to a previous frame... */
@@ -540,6 +541,12 @@ static int frame_complete(struct pbuf_node *frame)
         /* frame is complete or not - however we should check for all */
         /* the packtes of a frame being present - perhaps we should  */
         /* keep a bit vector in pbuf_node? LG.  */
+        if(frame->mbit == 1) {
+                LOG(LOG_LEVEL_VERBOSE) << "frame_accept_m\n";
+        }
+        if(frame->completed) {
+                LOG(LOG_LEVEL_VERBOSE) << "frame_accept_complete\n";
+        }
 
         return (frame->mbit == 1 || frame->completed == true);
 }
@@ -577,6 +584,7 @@ pbuf_decode(struct pbuf *playout_buf, time_ns_t curr_time,
                         } else {
                                 if (curr_time > curr->playout_time + 1 * NS_IN_SEC) {
                                         curr->completed = true;
+                                        LOG(LOG_LEVEL_VERBOSE) << "marking packet complete complete time\n";
                                 }
                                 debug_msg
                                     ("Unable to decode frame due to missing data (RTP TS=%u)\n",
