@@ -665,10 +665,14 @@ int decode_audio_frame(struct coded_data *cdata, void *pbuf_data, struct pbuf_st
         int bufnum = 0;
 
         if(!cdata) {
+                LOG(LOG_LEVEL_WARNING) << MOD_NAME << "CData is null!\n";
                 return FALSE;
         }
 
-        if (!cdata->data->m) {
+        uint32_t *audioHdr = (uint32_t *)(void *) cdata->data->data;
+        const int packet = cdata->data->pt;
+        if(!PT_AUDIO_HAS_FEC(packet) && !cdata->data->m) {
+                LOG(LOG_LEVEL_WARNING) << MOD_NAME << "Failed to recieve M packet!\n";
                 // skip frame without m-bit, we cannot determine number of channels
                 // (it is maximal substream number + 1 in packet with m-bit)
                 return FALSE;
@@ -745,6 +749,9 @@ int decode_audio_frame(struct coded_data *cdata, void *pbuf_data, struct pbuf_st
                 if(cdata->data->m) {
                         input_channels = ((ntohl(audio_hdr[0]) >> 22) & 0x3ff) + 1;
                 }
+                else if(PT_AUDIO_HAS_FEC(pt)) {
+                        input_channels = (ntohl(audio_hdr[3]) & 0xF) + 1;
+                }
 
                 // we have:
                 // 1) last packet, then we have just set total channels
@@ -817,6 +824,7 @@ int decode_audio_frame(struct coded_data *cdata, void *pbuf_data, struct pbuf_st
         if (fecEnabled) {
                 std::chrono::high_resolution_clock::time_point preFec = std::chrono::high_resolution_clock::now();
                 if(!audio_fec_decode_channels(s, fecChannels, received_frame)) {
+                        LOG(LOG_LEVEL_WARNING) << MOD_NAME << "FEC has failed!\n";
                         return FALSE;
                 }
                 std::chrono::high_resolution_clock::time_point postFec = std::chrono::high_resolution_clock::now();
@@ -827,6 +835,7 @@ int decode_audio_frame(struct coded_data *cdata, void *pbuf_data, struct pbuf_st
         s->frame_size = received_frame.get_data_len();
         audio_frame2 decompressed = audio_codec_decompress(decoder->audio_decompress, &received_frame);
         if (!decompressed) {
+                LOG(LOG_LEVEL_WARNING) << MOD_NAME << "Failed to decompress!\n";
                 return FALSE;
         }
 
