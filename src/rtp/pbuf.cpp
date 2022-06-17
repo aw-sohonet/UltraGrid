@@ -445,7 +445,9 @@ void pbuf_insert(struct pbuf *playout_buf, rtp_packet * pkt)
                         playout_buf->last->completed = true;
                         tmp->prv = playout_buf->last;
                         playout_buf->last = tmp;
-                        LOG(LOG_LEVEL_VERBOSE) << "frame_playbuff_not_empty_complete\n";
+                        if(!playout_buf->last->mbit) {
+                                LOG(LOG_LEVEL_VERBOSE) << "frame_playbuff_not_empty_complete\n";
+                        }
                 } else {
                         bool discard_pkt = false;
                         /* Packet belongs to a previous frame... */
