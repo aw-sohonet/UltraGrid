@@ -444,6 +444,7 @@ void pbuf_insert(struct pbuf *playout_buf, rtp_packet * pkt)
                         playout_buf->last->completed = true;
                         tmp->prv = playout_buf->last;
                         playout_buf->last = tmp;
+                        LOG(LOG_LEVEL_VERBOSE) << "marked as complete new frame\n";
                 } else {
                         bool discard_pkt = false;
                         /* Packet belongs to a previous frame... */
@@ -538,9 +539,16 @@ static int frame_complete(struct pbuf_node *frame)
         /* seqnum of the last packet in the previous frame, too?     */
         /* i dont think that would reflect correctly of weather this */
         /* frame is complete or not - however we should check for all */
-        /* the packets of a frame being present - perhaps we should  */
+        /* the packtes of a frame being present - perhaps we should  */
         /* keep a bit vector in pbuf_node? LG.  */
-        return (frame->mbit == 1 || frame->completed);
+        if(frame->mbit == 1) {
+                LOG(LOG_LEVEL_VERBOSE) << "frame_accept_m\n";
+        }
+        if(frame->completed) {
+                LOG(LOG_LEVEL_VERBOSE) << "frame_accept_complete\n";
+        }
+
+        return (frame->mbit == 1 || frame->completed == true);
 }
 
 int pbuf_is_empty(struct pbuf *playout_buf)
@@ -563,7 +571,7 @@ pbuf_decode(struct pbuf *playout_buf, time_ns_t curr_time,
         pbuf_validate(playout_buf);
 
         curr = playout_buf->frst;
-        while (curr != nullptr) {
+        while (curr != NULL) {
                 if (!curr->decoded 
                                 && curr_time > curr->playout_time
                    ) {
@@ -576,6 +584,7 @@ pbuf_decode(struct pbuf *playout_buf, time_ns_t curr_time,
                         } else {
                                 if (curr_time > curr->playout_time + 1 * NS_IN_SEC) {
                                         curr->completed = true;
+                                        LOG(LOG_LEVEL_VERBOSE) << "marking packet complete complete time\n";
                                 }
                                 debug_msg
                                     ("Unable to decode frame due to missing data (RTP TS=%u)\n",
@@ -584,7 +593,6 @@ pbuf_decode(struct pbuf *playout_buf, time_ns_t curr_time,
                 }
                 curr = curr->nxt;
         }
-        LOG(LOG_LEVEL_VERBOSE) << "frame_did_not_decode\n";
         return 0;
 }
 
