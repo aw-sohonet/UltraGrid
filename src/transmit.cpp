@@ -84,6 +84,7 @@
 #include "video.h"
 #include "video_codec.h"
 
+#include <chrono>
 #include <algorithm>
 #include <array>
 #include <iostream>
@@ -150,6 +151,8 @@ struct tx {
         const struct openssl_encrypt_info *enc_funcs;
         struct openssl_encrypt *encryption;
         long long int bitrate;
+
+        std::chrono::high_resolution_clock::time_point lastAudioSend;
 		
         char tmp_packet[RTP_MAX_MTU];
 };
@@ -239,6 +242,7 @@ struct tx *tx_init(struct module *parent, unsigned mtu, enum tx_media_type media
                 }
 
                 tx->bitrate = bitrate;
+                tx->lastAudioSend = std::chrono::high_resolution_clock::now();
         }
 		return tx;
 }
@@ -724,6 +728,9 @@ tx_send_base(struct tx *tx, struct video_frame *frame, struct rtp *rtp_session,
  */
 void audio_tx_send(struct tx* tx, struct rtp *rtp_session, const audio_frame2 * buffer)
 {
+        uint32_t diff = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - tx->lastAudioSend).count();
+        LOG(LOG_LEVEL_VERBOSE) << "audio_send_diff " << diff << "\n";
+
         if (!rtp_has_receiver(rtp_session)) {
                 return;
         }
@@ -899,14 +906,14 @@ void audio_tx_send(struct tx* tx, struct rtp *rtp_session, const audio_frame2 * 
                                                 mult_index = (mult_index + 1) % tx->mult_count;
                         }
 
-                        if (pos < buffer->get_data_len(channel)) {
-                                do {
-                                        GET_STOPTIME;
-                                        GET_DELTA;
-                                        if (delta < 0)
-                                                delta += 1000000000L;
-                                } while (packet_rate - delta > 0);
-                        }
+                        // if (pos < buffer->get_data_len(channel)) {
+                        //         do {
+                        //                 GET_STOPTIME;
+                        //                 GET_DELTA;
+                        //                 if (delta < 0)
+                        //                         delta += 1000000000L;
+                        //         } while (packet_rate - delta > 0);
+                        // }
 
                         /* when trippling, we need all streams goes to end */
                         if(tx->fec_scheme == FEC_MULT) {
@@ -918,6 +925,7 @@ void audio_tx_send(struct tx* tx, struct rtp *rtp_session, const audio_frame2 * 
         }
 
         tx->buffer ++;
+        tx->lastAudioSend = std::chrono::high_resolution_clock::now();
 }
 
 /**
