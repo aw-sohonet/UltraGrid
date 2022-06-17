@@ -803,7 +803,7 @@ void audio_tx_send(struct tx* tx, struct rtp *rtp_session, const audio_frame2 * 
                                         // Knowing the symbol size when it arrives is very important
                                         // as it will help with splitting up the data appropiately. 12 bits
                                         // allows for a symbol size up to the same size as a UDP packet (4096).
-                                        buffer->get_fec_params(channel).symbol_size << 4
+                                        buffer->get_fec_params(channel).symbol_size << 4 |
                                         // If every FEC packet knows the channel count, then receiving the M-bit
                                         // packet is not crucial to the entire frame being processed.
                                         buffer->get_channel_count() - 1);
