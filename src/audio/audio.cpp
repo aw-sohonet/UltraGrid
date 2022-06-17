@@ -709,6 +709,7 @@ static void *audio_receiver_thread(void *arg)
 
                                 struct audio_decoder *dec_state = (struct audio_decoder *) cp->decoder_state;
                                 if (dec_state && dec_state->enabled) {
+                                        int bufferCount = 0;
                                         dec_state->pbuf_data.buffer.data_len = 0;
                                         // We iterate in loop since there can be more than one frmae present in
                                         // the playout buffer and it would be discarded by following pbuf_remove()
@@ -717,6 +718,10 @@ static void *audio_receiver_thread(void *arg)
 
                                                 current_pbuf = &dec_state->pbuf_data;
                                                 decoded = true;
+                                                bufferCount++;
+                                        }
+                                        if(bufferCount != 0) {
+                                                LOG(LOG_LEVEL_VERBOSE) << "bufferedframe_count " << bufferCount;
                                         }
                                 }
 
