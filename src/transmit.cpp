@@ -151,8 +151,6 @@ struct tx {
         const struct openssl_encrypt_info *enc_funcs;
         struct openssl_encrypt *encryption;
         long long int bitrate;
-
-        std::chrono::high_resolution_clock::time_point lastAudioSend;
 		
         char tmp_packet[RTP_MAX_MTU];
 };
@@ -509,7 +507,7 @@ static inline int get_video_pkt_len(bool with_fec, int mtu,
         return mtu / alignment * alignment;
 }
 
-static inline void check_symbol_size(int fec_symbol_size, int payload_len)
+static inline void check_symbol_size(unsigned int fec_symbol_size, int payload_len)
 {
         thread_local static bool status_printed = false;
 
@@ -728,9 +726,6 @@ tx_send_base(struct tx *tx, struct video_frame *frame, struct rtp *rtp_session,
  */
 void audio_tx_send(struct tx* tx, struct rtp *rtp_session, const audio_frame2 * buffer)
 {
-        uint32_t diff = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - tx->lastAudioSend).count();
-        LOG(LOG_LEVEL_VERBOSE) << "audio_send_diff " << diff << "\n";
-
         if (!rtp_has_receiver(rtp_session)) {
                 return;
         }
@@ -801,7 +796,7 @@ void audio_tx_send(struct tx* tx, struct rtp *rtp_session, const audio_frame2 * 
                                         buffer->get_fec_params(channel).k << 24 |
                                         buffer->get_fec_params(channel).m << 16 |
                                         // Knowing the symbol size when it arrives is very important
-                                        // as it will help with splitting up the data appropiately. 12 bits
+                                        // as it will help with splitting up the data appropriately. 12 bits
                                         // allows for a symbol size up to the same size as a UDP packet (4096).
                                         buffer->get_fec_params(channel).symbol_size << 4 |
                                         // If every FEC packet knows the channel count, then receiving the M-bit
@@ -857,8 +852,9 @@ void audio_tx_send(struct tx* tx, struct rtp *rtp_session, const audio_frame2 * 
                         }
 
                         // If we are using Reed Sollomon then we want to ensure that the packets we
-                        // are sending are a multiple of the size of the FEC symbols.
-                        if(tx->fec_scheme == FEC_RS && fec_symbol_size * fecMultFactor <= tx->mtu - hdrs_len) {
+                        // are sending are a multiple of the size of the FEC symbols. This introduces
+                        // the risk that each packet being sent IS NOT within the MTU.
+                        if(tx->fec_scheme == FEC_RS) {
                                 data_len = fec_symbol_size * fecMultFactor;
                         }
                         else {
@@ -927,8 +923,7 @@ void audio_tx_send(struct tx* tx, struct rtp *rtp_session, const audio_frame2 * 
                 } while (pos < buffer->get_data_len(channel));
         }
 
-        tx->buffer ++;
-        tx->lastAudioSend = std::chrono::high_resolution_clock::now();
+        tx->buffer++;
 }
 
 /**
