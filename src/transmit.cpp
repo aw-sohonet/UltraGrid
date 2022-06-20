@@ -240,7 +240,6 @@ struct tx *tx_init(struct module *parent, unsigned mtu, enum tx_media_type media
                 }
 
                 tx->bitrate = bitrate;
-                tx->lastAudioSend = std::chrono::high_resolution_clock::now();
         }
 		return tx;
 }
