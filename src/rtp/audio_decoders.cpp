@@ -808,8 +808,8 @@ int decode_audio_frame(struct coded_data *cdata, void *pbuf_data, struct pbuf_st
                                 for(int i = 0; i < input_channels; i++) {
                                         fecChannels[i] = nullptr;
                                 }
+                                fecEnabled = true;
                         }
-                        fecEnabled = true;
                         
                         FecChannel* fecChannel;
                         // Initialise the fec channel for this channel if it hasn't been already
@@ -851,14 +851,10 @@ int decode_audio_frame(struct coded_data *cdata, void *pbuf_data, struct pbuf_st
         decoder->summary.update(bufnum);
 
         if (fecEnabled) {
-                std::chrono::high_resolution_clock::time_point preFec = std::chrono::high_resolution_clock::now();
                 if(!audio_fec_decode_channels(s, fecChannels, received_frame)) {
                         LOG(LOG_LEVEL_WARNING) << MOD_NAME << "FEC has failed!\n";
                         return FALSE;
                 }
-                std::chrono::high_resolution_clock::time_point postFec = std::chrono::high_resolution_clock::now();
-                long long fecDuration = std::chrono::duration_cast<std::chrono::microseconds>(postFec - preFec).count();
-                LOG(LOG_LEVEL_VERBOSE) << MOD_NAME << "fec_duration " << fecDuration << "\n";
         }
 
         s->frame_size = received_frame.get_data_len();
