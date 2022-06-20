@@ -426,7 +426,6 @@ void pbuf_insert(struct pbuf *playout_buf, rtp_packet * pkt)
                 /* playout buffer is empty - add new frame */
                 playout_buf->frst = create_new_pnode(pkt, playout_buf->playout_delay_us + 1000 * (playout_buf->offset_ms ? *playout_buf->offset_ms : 0));
                 playout_buf->last = playout_buf->frst;
-                LOG(LOG_LEVEL_VERBOSE) << "frame_playbuff_empty_complete\n";
                 return;
         }
 
@@ -445,9 +444,6 @@ void pbuf_insert(struct pbuf *playout_buf, rtp_packet * pkt)
                         playout_buf->last->completed = true;
                         tmp->prv = playout_buf->last;
                         playout_buf->last = tmp;
-                        if(!playout_buf->last->mbit) {
-                                LOG(LOG_LEVEL_VERBOSE) << "frame_playbuff_not_empty_complete\n";
-                        }
                 } else {
                         bool discard_pkt = false;
                         /* Packet belongs to a previous frame... */
@@ -542,16 +538,9 @@ static int frame_complete(struct pbuf_node *frame)
         /* seqnum of the last packet in the previous frame, too?     */
         /* i dont think that would reflect correctly of weather this */
         /* frame is complete or not - however we should check for all */
-        /* the packtes of a frame being present - perhaps we should  */
+        /* the packets of a frame being present - perhaps we should  */
         /* keep a bit vector in pbuf_node? LG.  */
-        if(frame->mbit == 1) {
-                LOG(LOG_LEVEL_VERBOSE) << "frame_accept_m\n";
-        }
-        if(frame->completed) {
-                LOG(LOG_LEVEL_VERBOSE) << "frame_accept_complete\n";
-        }
-
-        return (frame->mbit == 1 || frame->completed == true);
+        return (frame->mbit == 1 || frame->completed);
 }
 
 int pbuf_is_empty(struct pbuf *playout_buf)
@@ -574,22 +563,19 @@ pbuf_decode(struct pbuf *playout_buf, time_ns_t curr_time,
         pbuf_validate(playout_buf);
 
         curr = playout_buf->frst;
-        while (curr != NULL) {
+        while (curr != nullptr) {
                 if (!curr->decoded 
                                 && curr_time > curr->playout_time
                    ) {
                         if (frame_complete(curr)) {
                                 struct pbuf_stats stats = { playout_buf->received_pkts_cum,
                                         playout_buf->expected_pkts_cum };
-                                LOG(LOG_LEVEL_VERBOSE) << "frame_decode_begin\n";
                                 int ret = decode_func(curr->cdata, data, &stats);
-                                LOG(LOG_LEVEL_VERBOSE) << "frame_decode_end\n";
                                 curr->decoded = 1;
                                 return ret;
                         } else {
                                 if (curr_time > curr->playout_time + 1 * NS_IN_SEC) {
                                         curr->completed = true;
-                                        LOG(LOG_LEVEL_VERBOSE) << "frame_time_complete\n";
                                 }
                                 debug_msg
                                     ("Unable to decode frame due to missing data (RTP TS=%u)\n",
