@@ -558,20 +558,38 @@ static bool audio_decoder_reconfigure(struct state_audio_decoder *decoder, struc
         return true;
 }
 
+/**
+ * @brief A helper function for calculating if the FEC parameters are still applicable to the existing Reed Solomon
+ *        settings.
+ * @param rsState    The existing Reed Solomon state
+ * @param fecChannel The received channel containing the decoded FEC settings
+ * @return bool A boolean indicating whether or not the `rsState` matches the settings in the latest channel.
+ */
 static bool fec_valid(rs* rsState, FecChannel* fecChannel) {
-        return rsState->getK() == fecChannel->getKBlocks() && rsState->getM() == (fecChannel->getKBlocks() + fecChannel->getMBlocks());
+        return rsState->getK() == fecChannel->getKBlocks()
+                && rsState->getM() == (fecChannel->getKBlocks() + fecChannel->getMBlocks());
 }
 
+/**
+ * @brief This will decode the data collected from the transmission and decode the data into the given audio frame.
+ *        The function is optimised not to bother attempting a FEC decode if all of the required data has been
+ *        received.
+ * @param s The packet buffer data
+ * @param fecChannelData A list of channel data received from the transmission
+ * @param frame The audio frame to place the decoded data into
+ * @return bool A boolean indicating whether decoding the channel data was possible or not. False is returned when one
+ *              of the channels has not received enough data to be reconstructed.
+ */
 static bool audio_fec_decode_channels(struct pbuf_audio_data *s, vector<FecChannel*> fecChannelData, audio_frame2 &frame) {
         // Check that there is data to process
-        if(fecChannelData.size() == 0) {
+        if(fecChannelData.empty()) {
                 LOG(LOG_LEVEL_ERROR) << "FEC is enabled, but there is no channel data to process\n";
                 return FALSE;
         }
 
         // Create the decoder if it does not exist
         struct state_audio_decoder *decoder = s->decoder;
-        if(decoder->rs_state == NULL || !fec_valid(decoder->rs_state, fecChannelData[0])) {
+        if(decoder->rs_state == nullptr || !fec_valid(decoder->rs_state, fecChannelData[0])) {
                 // Use the data from the first instance. It should all be the same. Don't worry about the
                 // multiplication as it's not relevant when decoding
                 decoder->rs_state = new rs(fecChannelData[0]->getKBlocks(), fecChannelData[0]->getMBlocks() + fecChannelData[0]->getKBlocks(), 1);
@@ -580,13 +598,13 @@ static bool audio_fec_decode_channels(struct pbuf_audio_data *s, vector<FecChann
         audio_desc audioDesc{};
 
         // Iterate through each channel and decode the FEC output
-        for(int channel = 0; channel < fecChannelData.size(); channel++) {
+        for(size_t channel = 0; channel < fecChannelData.size(); channel++) {
                 FecChannel* fecChannel = fecChannelData[channel];
-                // Organise the data ready for recovery
                 if(fecChannel == nullptr) {
                         LOG(LOG_LEVEL_ERROR) << "Lost all data from channel " << channel + 1 << ". Unable to recover data.\n";
                         return false;
                 }
+                // Organise the data ready for recovery
                 FecRecoveryState fecState = fecChannel->generateRecovery();
                 switch(fecState) {
                         case FecRecoveryState::FEC_COMPLETE: {
@@ -605,6 +623,8 @@ static bool audio_fec_decode_channels(struct pbuf_audio_data *s, vector<FecChann
                                 break;
                         }
                 }
+
+                // Check whether or not the audio data that has been received matches the frames settings
                 if (!audioDesc) {
                         uint32_t audioHdrTuple = 0;
                         uint32_t audioTag = 0;
@@ -630,6 +650,8 @@ static bool audio_fec_decode_channels(struct pbuf_audio_data *s, vector<FecChann
                                 return FALSE;
                         }
                 }
+
+                // If we have reached this point then the data in the FEC Channels segments block is the correct data!
                 // Get the first 4 bytes in the buffer, as they are the size of the original data length + header (so remove the audio header length)
                 uint32_t originalSize = *((uint32_t*)(*fecChannel)[0]);
                 uint32_t offset = 0;
@@ -638,14 +660,13 @@ static bool audio_fec_decode_channels(struct pbuf_audio_data *s, vector<FecChann
                 originalSize -= sizeof(audio_payload_hdr_t);
                 // Resize the frame so we know it's the correct size
                 frame.resize(channel, originalSize);
-                // If we have reached this point then the data in the FEC Channels segments block is the correct data!
                 // The first part of the data needs the audio header and data length removed from it (audio header is 5 32bit ints. data length is 1 32bit int).
                 frame.replace(channel, offset, (*fecChannel)[0] + initialBlockOffset, fecChannel->getSegmentSize() - initialBlockOffset);
                 // Reduce the original size by what we have written into the frame
                 originalSize -= fecChannel->getSegmentSize() - initialBlockOffset;
                 offset += fecChannel->getSegmentSize() - initialBlockOffset;
-                for(int i = 1; i < fecChannel->getKBlocks(); i++) {
-                        if((int) originalSize - fecChannel->getSegmentSize() < 0) {
+                for(size_t i = 1; i < fecChannel->getKBlocks(); i++) {
+                        if((int) originalSize - (int)fecChannel->getSegmentSize() < 0) {
                                 frame.replace(channel, offset, (*fecChannel)[i], originalSize);
                         }
                         else {
@@ -766,7 +787,7 @@ int decode_audio_frame(struct coded_data *cdata, void *pbuf_data, struct pbuf_st
                 // 2) not last, but the last one was processed at first
                 assert(input_channels > 0);
 
-                int channel = (ntohl(audio_hdr[0]) >> 22) & 0x3ff;
+                uint32_t channel = (ntohl(audio_hdr[0]) >> 22) & 0x3ff;
                 bufnum = ntohl(audio_hdr[0]) & ((1U<<BUFNUM_BITS) - 1U);
                 int sample_rate = ntohl(audio_hdr[3]) & 0x3fffff;
                 unsigned int offset = ntohl(audio_hdr[1]);
