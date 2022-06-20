@@ -806,7 +806,7 @@ void audio_tx_send(struct tx* tx, struct rtp *rtp_session, const audio_frame2 * 
                                         buffer->get_fec_params(channel).symbol_size << 4 |
                                         // If every FEC packet knows the channel count, then receiving the M-bit
                                         // packet is not crucial to the entire frame being processed.
-                                        buffer->get_channel_count() - 1);
+                                        (buffer->get_channel_count() - 1));
                         rtp_hdr[4] = htonl(buffer->get_fec_params(channel).seed);
                 }
 
@@ -1200,4 +1200,3 @@ int tx_get_buffer_id(struct tx *tx)
         return tx->buffer;
 
 }
-
