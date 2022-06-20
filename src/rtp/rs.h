@@ -59,6 +59,9 @@ struct rs : public fec {
         void decodeAudio(FecChannel* channel);
         static void initialiseChannel(FecChannel* channel, uint32_t fecHeader);
 
+        unsigned int getK();
+        unsigned int getM();
+
 private:
         int get_ss(int hdr_len, int len);
         uint32_t get_buf_len(const char *buf, std::map<int, int> const & c_m);

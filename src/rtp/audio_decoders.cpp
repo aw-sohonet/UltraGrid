@@ -558,6 +558,10 @@ static bool audio_decoder_reconfigure(struct state_audio_decoder *decoder, struc
         return true;
 }
 
+static bool fec_valid(rs* rsState, FecChannel* fecChannel) {
+        return rsState->getK() == fecChannel->getKBlocks() && rsState->getM() == (fecChannel->getKBlocks() + fecChannel->getMBlocks());
+}
+
 static bool audio_fec_decode_channels(struct pbuf_audio_data *s, vector<FecChannel*> fecChannelData, audio_frame2 &frame) {
         // Check that there is data to process
         if(fecChannelData.size() == 0) {
@@ -567,7 +571,7 @@ static bool audio_fec_decode_channels(struct pbuf_audio_data *s, vector<FecChann
 
         // Create the decoder if it does not exist
         struct state_audio_decoder *decoder = s->decoder;
-        if(decoder->rs_state == NULL) {
+        if(decoder->rs_state == NULL || !fec_valid(decoder->rs_state, fecChannelData[0])) {
                 // Use the data from the first instance. It should all be the same. Don't worry about the
                 // multiplication as it's not relevant when decoding
                 decoder->rs_state = new rs(fecChannelData[0]->getKBlocks(), fecChannelData[0]->getMBlocks() + fecChannelData[0]->getKBlocks(), 1);
@@ -579,6 +583,10 @@ static bool audio_fec_decode_channels(struct pbuf_audio_data *s, vector<FecChann
         for(int channel = 0; channel < fecChannelData.size(); channel++) {
                 FecChannel* fecChannel = fecChannelData[channel];
                 // Organise the data ready for recovery
+                if(fecChannel == nullptr) {
+                        LOG(LOG_LEVEL_ERROR) << "Lost all data from channel " << channel + 1 << ". Unable to recover data.\n";
+                        return false;
+                }
                 FecRecoveryState fecState = fecChannel->generateRecovery();
                 switch(fecState) {
                         case FecRecoveryState::FEC_COMPLETE: {
@@ -637,7 +645,7 @@ static bool audio_fec_decode_channels(struct pbuf_audio_data *s, vector<FecChann
                 originalSize -= fecChannel->getSegmentSize() - initialBlockOffset;
                 offset += fecChannel->getSegmentSize() - initialBlockOffset;
                 for(int i = 1; i < fecChannel->getKBlocks(); i++) {
-                        if(originalSize - fecChannel->getSegmentSize() < 0) {
+                        if((int) originalSize - fecChannel->getSegmentSize() < 0) {
                                 frame.replace(channel, offset, (*fecChannel)[i], originalSize);
                         }
                         else {
@@ -749,7 +757,7 @@ int decode_audio_frame(struct coded_data *cdata, void *pbuf_data, struct pbuf_st
                 if(cdata->data->m) {
                         input_channels = ((ntohl(audio_hdr[0]) >> 22) & 0x3ff) + 1;
                 }
-                else if(PT_AUDIO_HAS_FEC(pt)) {
+                else if(input_channels == 0 && PT_AUDIO_HAS_FEC(pt)) {
                         input_channels = (ntohl(audio_hdr[3]) & 0xF) + 1;
                 }
 

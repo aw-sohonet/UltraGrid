@@ -427,10 +427,18 @@ void rs::decodeAudio(FecChannel* channel) {
         fec_decode((const fec_t*) this->state, (gf**) channel->getRecoverySegments(), (gf**) channel->getOutputSegments(), channel->getRecoveryIndex(), channel->getSegmentSize());
 }
 
+unsigned int rs::getK() {
+        return this->m_k;
+}
+
+unsigned int rs::getM() {
+        return this->m_n;
+}
+
 void rs::initialiseChannel(FecChannel* channel, uint32_t fecHeader) {
     channel->setKBlocks(fecHeader >> 24);
     channel->setMBlocks(((fecHeader >> 16) & 0XFF) + channel->getKBlocks());
-    channel->setSegmentSize(fecHeader & 0XFFFF);
+    channel->setSegmentSize((fecHeader >> 4) & 0XFFF);
     channel->initialise();
 }
 
@@ -574,7 +582,6 @@ FecRecoveryState FecChannel::generateRecovery() {
             }
         }
     }
-
     // If no parity segments have been used then the recovery segments will be the complete the data
     if(parityCounter == 0) {
         return FecRecoveryState::FEC_COMPLETE;
