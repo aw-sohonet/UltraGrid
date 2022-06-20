@@ -701,7 +701,7 @@ public:
                         }       
                 }
 
-                LOG(LOG_LEVEL_VERBOSE) << MOD_NAME << " UPDATE playing speed " <<  average_buffer_depth << " vs " << buffered_count << " " << average_delta.avg() << " average_velocity " << resample_hz << " resample_hz\n";
+                LOG(LOG_LEVEL_DEBUG) << MOD_NAME << " UPDATE playing speed " <<  average_buffer_depth << " vs " << buffered_count << " " << average_delta.avg() << " average_velocity " << resample_hz << " resample_hz\n";
 
    
                 if (dst_frame_rate != 0) {
