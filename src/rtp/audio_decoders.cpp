@@ -608,15 +608,15 @@ static bool audio_fec_decode_channels(struct pbuf_audio_data *s, vector<FecChann
                 FecRecoveryState fecState = fecChannel->generateRecovery();
                 switch(fecState) {
                         case FecRecoveryState::FEC_COMPLETE: {
-                                LOG(LOG_LEVEL_DEBUG) << MOD_NAME << "Received all of the data for the channel " << channel + 1 << "\n";
+                                LOG(LOG_LEVEL_DEBUG) << MOD_NAME << "Received all of the data for the channel: " << channel + 1 << "\n";
                                 break;
                         }
                         case FecRecoveryState::FEC_UNRECOVERABLE: {
-                                LOG(LOG_LEVEL_ERROR) << MOD_NAME << "We did not receive enough segments (k segments) to be able to reconstruct the data for channel " << channel + 1 << "\n";
+                                LOG(LOG_LEVEL_ERROR) << MOD_NAME << "We did not receive enough segments (k segments) to be able to reconstruct the data for channel: " << channel + 1 << "\n";
                                 return false;
                         }
                         case FecRecoveryState::FEC_RECOVERABLE: {
-                                LOG(LOG_LEVEL_INFO) << MOD_NAME << "Segments were lost, but enough were received to reconstruct the data for channel" << channel + 1 << ".\n";
+                                LOG(LOG_LEVEL_INFO) << MOD_NAME << "Segments were lost, but enough were received to reconstruct the data for channel: " << channel + 1 << "\n";
                                 decoder->rs_state->decodeAudio(fecChannel);
                                 // Once the recovery data has been passed into the FEC decoder, then organise the the data so that it is in order.
                                 fecChannel->recover();
