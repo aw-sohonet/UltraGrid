@@ -576,6 +576,7 @@ pbuf_decode(struct pbuf *playout_buf, time_ns_t curr_time,
                         } else {
                                 if (curr_time > curr->playout_time + 1 * NS_IN_SEC) {
                                         curr->completed = true;
+                                        LOG(LOG_LEVEL_ERROR) << "Sending the audio frame as playout requires it\n";
                                 }
                                 debug_msg
                                     ("Unable to decode frame due to missing data (RTP TS=%u)\n",
