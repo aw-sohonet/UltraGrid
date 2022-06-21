@@ -1070,7 +1070,7 @@ void audio_fec_tx_send(struct tx* tx, struct rtp *rtp_session, const audio_frame
 
     unsigned int fecMultFactor = buffer->get_fec_params(0).mult;
     unsigned int fecKSize = buffer->get_fec_params(0).k;
-    unsigned int fecMSize = buffer->get_fec_params(0).m;
+    unsigned int fecMSize = buffer->get_fec_params(0).m + fecKSize;
 
     // Calculate the total amount of packets that will be sent
     unsigned int totalPackets = ceil(fecMSize / fecMultFactor);
@@ -1083,14 +1083,14 @@ void audio_fec_tx_send(struct tx* tx, struct rtp *rtp_session, const audio_frame
     unsigned int paritySegmentCount = (totalPackets - audioSegmentPackets) * fecMultFactor;
 
     // Start by sending all of the segments containing the audio data
-    for (int channel = 0; channel < buffer->get_channel_count(); ++channel)
+    for (int channel = 0; channel < buffer->get_channel_count(); channel++)
     {
         audio_tx_send_channel_segments(tx, rtp_session, buffer, channel, 0, audioSegmentCount, pt, timestamp);
     }
     // Loop over the parity bits and send the parity segments channel by channel
     for(unsigned int i = 0; i < paritySegmentCount; i += fecMultFactor) {
         // Follow up with the parity segments on the end of each channel
-        for (int channel = 0; channel < buffer->get_channel_count(); ++channel)
+        for (int channel = 0; channel < buffer->get_channel_count(); channel++)
         {
             audio_tx_send_channel_segments(tx, rtp_session, buffer, channel, audioSegmentCount + i, fecMultFactor, pt, timestamp);
         }
