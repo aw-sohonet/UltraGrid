@@ -97,7 +97,7 @@ typedef struct audio_frame
 }
 audio_frame;
 
-int audioFrameGetChannelSampleCount(audio_frame& audioFrame);
+int audioFrameGetChannelSampleCount(audio_frame* audioFrame);
 
 #define AUDIO_FRAME_DISPOSE(frame) if ((frame) && (frame)->dispose) \
         (frame)->dispose(frame)
