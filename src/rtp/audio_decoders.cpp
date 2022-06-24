@@ -584,7 +584,12 @@ static bool audio_fec_decode_channels(struct pbuf_audio_data *s, vector<FecChann
         // Check that there is data to process
         if(fecChannelData.empty()) {
                 LOG(LOG_LEVEL_ERROR) << "FEC is enabled, but there is no channel data to process\n";
-                return FALSE;
+                return false;
+        }
+
+        if(fecChannelData[0] == nullptr) {
+            LOG(LOG_LEVEL_ERROR) << "Unable to validate FEC settings. Lost all data from channel 1.\n";
+            return false;
         }
 
         // Create the decoder if it does not exist
