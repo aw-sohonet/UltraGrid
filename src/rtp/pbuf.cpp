@@ -69,6 +69,7 @@
 #include <climits>
 #include <iostream>
 #include <iomanip>
+#include <string>
 
 #define PBUF_MAGIC	0xcafebabe
 
@@ -594,3 +595,19 @@ void pbuf_set_playout_delay(struct pbuf *playout_buf, double playout_delay)
         playout_buf->playout_delay_us = playout_delay * 1000 * 1000;
 }
 
+struct pbuf_audio_data pbuf_audio_copy(struct pbuf_audio_data* audioData)
+{
+    struct pbuf_audio_data copy{};
+    // Copy the contents of the buffer
+    copy.buffer = audioData->buffer;
+    // We want a copy of the audio data
+    copy.buffer.data = (char*) malloc(sizeof(char) * copy.buffer.data_len);
+    memcpy(audioData->buffer.data, audioData->buffer.data, audioData->buffer.data_len);
+    // Nothing else has a pointer we need to explicitly copy
+    copy.source = audioData->source;
+    copy.reconfigured = audioData->reconfigured;
+    copy.frame_size = audioData->frame_size;
+    copy.decoder = audioData->decoder;
+
+    return copy;
+}

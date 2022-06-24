@@ -85,13 +85,14 @@ typedef struct audio_frame
 {
         int bps;                /* bytes per sample */
         int sample_rate;
-        char *data; /* data should be at least 4B aligned */
+        char *data;             /* data should be at least 4B aligned */
         int data_len;           /* size of useful data in buffer */
-        int ch_count;		/* count of channels */
+        int ch_count;		    /* count of channels */
         int max_size;           /* maximal size of data in buffer */
         void *network_source;   /* pointer to sockaddr_storage containing
                                    network source that the audio stream came
                                    from. Relevant only for receiver. */
+        int getChannelSampleCount();
         void (*dispose)(struct audio_frame *); ///< called by sender when frame was processed
         void *dispose_udata;    ///< additional data that may the caller use in dispose
 }
