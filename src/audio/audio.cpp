@@ -782,7 +782,7 @@ static void *audio_receiver_thread(void *arg)
                         // Store a time for when we're sending out the last frame
                         lastFrame = std::chrono::high_resolution_clock::now();
                         playAudio = true;
-                        frameDuration = ceil(1000 * ((double) pCurrentPbuf->buffer.sample_rate / (double) audioFrameGetChannelSampleCount(&pCurrentPbuf->buffer)));
+                        frameDuration = ceil(1000 * ((double) pCurrentPbuf->buffer.sample_rate / (double) audioFrameGetChannelSampleCount(pCurrentPbuf->buffer)));
                     }
                 }
 
