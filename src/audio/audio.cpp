@@ -56,7 +56,6 @@
 #include <cinttypes>
 #include <iomanip>
 #include <iostream>
-#include <queue>
 #include <sstream>
 #include <stdio.h>
 #include <string>
@@ -641,21 +640,11 @@ static void *audio_receiver_thread(void *arg)
         struct audio_desc device_desc{};
         bool playback_supports_multiple_streams;
 
-        struct pbuf_audio_data currentPbuf = {};
-        struct pbuf_audio_data *pCurrentPbuf = NULL;
+        struct pbuf_audio_data *current_pbuf = NULL;
 
-        std::queue<struct pbuf_audio_data> audioBuffer;
-        bool audioBufferEnabled = true;
-        bool delayReached = false;
-        bool receivedFirstFrame = false;
-        uint32_t frameDuration = 0;
-        // Capture when the thread begins so the audio buffer knows how long to wait until
-        // it can start releasing audio.
-        std::chrono::high_resolution_clock::time_point queueBegin;
-        std::chrono::high_resolution_clock::time_point lastFrame;
 #ifdef HAVE_JACK_TRANS
         struct pbuf_audio_data jack_pbuf{};
-        pCurrentPbuf = &jack_pbuf;
+        current_pbuf = &jack_pbuf;
 #endif
 
         size_t len = sizeof playback_supports_multiple_streams;
@@ -725,21 +714,8 @@ static void *audio_receiver_thread(void *arg)
                                         // the playout buffer and it would be discarded by following pbuf_remove()
                                         // call.
                                         while (pbuf_decode(cp->playout_buffer, curr_time, s->receiver == NET_NATIVE ? decode_audio_frame : decode_audio_frame_mulaw, &dec_state->pbuf_data)) {
-                                                // If the audio buffer is enabled, then it should be pushed into the queue
-                                                // so that the audio buffer can determine when it should be enabled.
-                                                if(audioBufferEnabled) {
-                                                    audioBuffer.push(pbuf_audio_copy(&dec_state->pbuf_data));
-                                                    // The first time a frame arrives we need to measure the delay we'd
-                                                    // like to introduce.
-                                                    if(!receivedFirstFrame) {
-                                                        receivedFirstFrame = true;
-                                                        queueBegin = std::chrono::high_resolution_clock::now();
-                                                    }
-                                                }
-                                                else {
-                                                    pCurrentPbuf = &dec_state->pbuf_data;
-                                                    decoded = true;
-                                                }
+                                                current_pbuf = &dec_state->pbuf_data;
+                                                decoded = true;
                                         }
                                 }
 
@@ -756,40 +732,11 @@ static void *audio_receiver_thread(void *arg)
 #endif
                 }
 
-                bool playAudio = false;
-                if(!audioBuffer.empty()) {
-                    bool sendAudio = false;
-                    if(delayReached) {
-                        uint32_t frameDelta = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - lastFrame).count();
-                        if(frameDelta > frameDuration) {
-                            playAudio = true;
-                        }
-                    }
-                    else if(receivedFirstFrame) {
-                        uint32_t delayDelta = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - queueBegin).count();
-                        if(delayDelta > 500) {
-                            sendAudio = true;
-                            delayReached = true;
-                        }
-                    }
-
-                    if(sendAudio) {
-                        // Grab a copy of the front item in the queue, remove it from the queue, and create a pointer to it.
-                        currentPbuf = audioBuffer.front();
-                        audioBuffer.pop();
-                        pCurrentPbuf = &currentPbuf;
-                        // Store a time for when we're sending out the last frame
-                        lastFrame = std::chrono::high_resolution_clock::now();
-                        playAudio = true;
-                        frameDuration = ceil(1000 * ((double) pCurrentPbuf->buffer.sample_rate / (double) pCurrentPbuf->buffer.getChannelSampleCount()));
-                    }
-                }
-
-                if (decoded || playAudio) {
+                if (decoded) {
                         bool failed = false;
 
                         struct audio_desc curr_desc;
-                        curr_desc = audio_desc_from_audio_frame(&pCurrentPbuf->buffer);
+                        curr_desc = audio_desc_from_audio_frame(&current_pbuf->buffer);
 
                         if(!audio_desc_eq(device_desc, curr_desc)) {
                                 int log_l;
@@ -814,16 +761,16 @@ static void *audio_receiver_thread(void *arg)
                         if (failed) {
                                 continue;
                         }
-                        audio_update_recv_buf(s, pCurrentPbuf->frame_size);
+                        audio_update_recv_buf(s, current_pbuf->frame_size);
 
                         if(s->echo_state) {
 #ifdef HAVE_SPEEXDSP
-                                echo_play(s->echo_state, &pCurrentPbuf->buffer);
+                                echo_play(s->echo_state, &current_pbuf->buffer);
 #endif
                         }
 
                         if (!playback_supports_multiple_streams) {
-                                audio_playback_put_frame(s->audio_playback_device, &pCurrentPbuf->buffer);
+                                audio_playback_put_frame(s->audio_playback_device, &current_pbuf->buffer);
                         } else {
                                 pdb_iter_t it;
                                 cp = pdb_iter_init(s->audio_participants, &it);

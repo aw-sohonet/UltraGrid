@@ -641,8 +641,3 @@ tuple<bool, bool> audio_frame2::resample(audio_frame2_resampler & resampler_stat
 
         return {true, reinitResampler};
 }
-
-int audio_frame::getChannelSampleCount() {
-    // The data length is a result of the bps, channel count, and samples multipled together
-    return this->data_len / this->bps / this->ch_count;
-}
