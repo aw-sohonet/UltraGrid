@@ -150,45 +150,6 @@ struct channel_map {
         }
 };
 
-struct state_audio_decoder_summary {
-private:
-        unsigned long int last_bufnum = -1;
-        int64_t played = 0;
-        int64_t missed = 0;
-
-        steady_clock::time_point t_last = steady_clock::now();
-
-        void print() const {
-                LOG(LOG_LEVEL_INFO) << style::underline << "Audio dec stats" << style::reset << " (cumulative): "
-                        << style::bold << played << style::reset << " played / "
-                        << style::bold << played + missed << style::reset << " total audio frames\n";
-        }
-public:
-        ~state_audio_decoder_summary() {
-                print();
-        }
-
-        void update(unsigned long int bufnum) {
-                if (last_bufnum != static_cast<unsigned long int>(-1)) {
-                        if ((last_bufnum + 1) % (1U<<BUFNUM_BITS) == bufnum) {
-                                played += 1;
-                        } else {
-                                unsigned long int diff = (bufnum - last_bufnum + 1 + (1U<<BUFNUM_BITS)) % (1U<<BUFNUM_BITS);
-                                if (diff >= (1U<<BUFNUM_BITS) / 2) {
-                                        diff -= (1U<<BUFNUM_BITS) / 2;
-                                }
-                                missed += diff;
-                        }
-                }
-                last_bufnum = bufnum;
-
-                auto now = steady_clock::now();
-                if (duration_cast<seconds>(steady_clock::now() - t_last).count() > CUMULATIVE_REPORTS_INTERVAL) {
-                        print();
-                        t_last = now;
-                }
-        }
-};
 
 class AudioDecoderSummary {
 public:
@@ -216,7 +177,6 @@ public:
                                 << rang::style::bold << this->unrecoverableFrames
                                 << rang::style::reset << " / Total frames with no channel data: "
                                 << rang::style::bold << this->noChannelDataFrames
-                                << rang::style::reset << " / Buffer Overflows: "
                                 << "\n";
             // Ensure that the summary gets called 30 seconds from now
             this->lastSummary = now;
