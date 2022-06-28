@@ -75,6 +75,7 @@
 #include <cstring>
 #include <ctime>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -189,6 +190,99 @@ public:
         }
 };
 
+class AudioDecoderSummary {
+public:
+    ~AudioDecoderSummary() {
+        this->report(true);
+    }
+
+    /**
+     * @brief This will detail out the longer running stats of the Audio Decoder. It should be called on
+     *        every audio frame but will only print out the report once every 30 seconds.
+     *
+     * @param force - This can be used to force a reporting
+     */
+    void report(bool force = false) {
+        std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+        if(std::chrono::duration_cast<std::chrono::seconds>(now - this->lastSummary).count() > CUMULATIVE_REPORTS_INTERVAL || force) {
+            LOG(LOG_LEVEL_INFO) << rang::style::underline << "Audio Decoder stats (cumulative)"
+                                << rang::style::reset << " - Frames Played: "
+                                << rang::style::bold << this->playedFrames
+                                << rang::style::reset << " / Total Frames: "
+                                << rang::style::bold << this->missedFrames + this->playedFrames
+                                << rang::style::reset << " / Total recoverable channels: "
+                                << rang::style::bold << this->recoverableChannels
+                                << rang::style::reset << " / Total unrecoverable frames: "
+                                << rang::style::bold << this->unrecoverableFrames
+                                << rang::style::reset << " / Total frames with no channel data: "
+                                << rang::style::bold << this->noChannelDataFrames
+                                << rang::style::reset << " / Buffer Overflows: "
+                                << "\n";
+            // Ensure that the summary gets called 30 seconds from now
+            this->lastSummary = now;
+        }
+    }
+
+    /**
+    * @brief This should be called when a frame has arrived, but one of the channels in the frame
+     *       does not contain any data.
+    */
+    void incrementNoChannelDataFrames() {
+        this->noChannelDataFrames++;
+    }
+
+    /**
+     * @brief This should be called when a frame has arrived, but one of the channels has not received
+     *        enough data to be recoverable via FEC.
+     */
+    void incrementUnrecoverableFrames() {
+        this->unrecoverableFrames++;
+    }
+
+    /**
+     * @brief This should be called when a channel is missing some data but, thanks for FEC, that data is
+     *        recoverable.
+     */
+    void incrementRecoverableFrames() {
+        this->recoverableChannels++;
+    }
+
+    /**
+     * Call this on each decode to track the number of played frames vs missed frames
+     * @param bufferNumber The buffer
+     */
+    void updateBuffer(uint64_t bufferNumber) {
+        if (this->lastBuffer != std::numeric_limits<uint64_t>::max()) {
+            if ((this->lastBuffer + 1) % (1U<<BUFNUM_BITS) == bufferNumber) {
+                this->playedFrames += 1;
+            }
+            else {
+                uint64_t diff = (bufferNumber - this->lastBuffer + 1 + (1U<<BUFNUM_BITS)) % (1U<<BUFNUM_BITS);
+                if (diff >= (1U<<BUFNUM_BITS) / 2) {
+                    diff -= (1U<<BUFNUM_BITS) / 2;
+                }
+                this->missedFrames += diff;
+            }
+        }
+        this->lastBuffer = bufferNumber;
+    }
+private:
+    // Keep track of the number of frames where ALL data was missing for a channel
+    uint64_t noChannelDataFrames = 0;
+    // Keep track of the number of frames which were unrecoverable
+    uint64_t unrecoverableFrames = 0;
+    // Keep track of the number of channels we needed to recover
+    uint64_t recoverableChannels = 0;
+    // Keep track of the total number of frames played
+    uint64_t playedFrames = 0;
+    uint64_t missedFrames = 0;
+    // Set the buffer to be max, so we're aware of what it's originally set too.
+    uint64_t lastBuffer = std::numeric_limits<uint64_t>::max();
+    // We want to the summary to be outputted every 30 or so seconds. So keep track of
+    // the last we outputted data.
+    std::chrono::steady_clock::time_point lastSummary = std::chrono::steady_clock::now();
+};
+
 struct state_audio_decoder {
         uint32_t magic;
         struct module mod;
@@ -216,17 +310,15 @@ struct state_audio_decoder {
         bool muted;
 
         audio_frame2_resampler resampler;
-        bool resample_tail_buffer;
 
         audio_playback_ctl_t audio_playback_ctl_func;
         void *audio_playback_state;
 
         struct control_state *control;
-        // fec *fec_state;
-        rs *rs_state;
-        fec_desc fec_state_desc;
 
-        struct state_audio_decoder_summary summary;
+
+        rs *rs_state;
+        AudioDecoderSummary summary;
 
         audio_frame2 resample_remainder;
         std::atomic_uint64_t req_resample_to{0}; // hi 32 - numerator; lo 32 - denominator
@@ -293,13 +385,13 @@ void *audio_decoder_init(char *audio_channel_map, const char *audio_scale, const
         s->audio_playback_ctl_func = c;
         s->audio_playback_state = p_state;
 
-        s->resample_tail_buffer = false;
-
         module_init_default(&s->mod);
         s->mod.cls = MODULE_CLASS_DECODER;
         s->mod.priv_data = s;
         s->mod.new_message = audio_decoder_process_message;
         module_register(&s->mod, parent);
+
+        s->summary = AudioDecoderSummary();
 
         if (const char *val = get_commandline_param("soft-resample")) {
                 assert(strchr(val, '/') != nullptr);
@@ -607,6 +699,7 @@ static bool audio_fec_decode_channels(struct pbuf_audio_data *s, vector<FecChann
                 FecChannel* fecChannel = fecChannelData[channel];
                 if(fecChannel == nullptr) {
                         LOG(LOG_LEVEL_ERROR) << "Lost all data from channel " << channel + 1 << ". Unable to recover data.\n";
+                        decoder->summary.incrementNoChannelDataFrames();
                         return false;
                 }
                 // Organise the data ready for recovery
@@ -618,6 +711,7 @@ static bool audio_fec_decode_channels(struct pbuf_audio_data *s, vector<FecChann
                         }
                         case FecRecoveryState::FEC_UNRECOVERABLE: {
                                 LOG(LOG_LEVEL_ERROR) << MOD_NAME << "We did not receive enough segments (k segments) to be able to reconstruct the data for channel: " << channel + 1 << "\n";
+                                decoder->summary.incrementUnrecoverableFrames();
                                 return false;
                         }
                         case FecRecoveryState::FEC_RECOVERABLE: {
@@ -625,6 +719,7 @@ static bool audio_fec_decode_channels(struct pbuf_audio_data *s, vector<FecChann
                                 decoder->rs_state->decodeAudio(fecChannel);
                                 // Once the recovery data has been passed into the FEC decoder, then organise the the data so that it is in order.
                                 fecChannel->recover();
+                                decoder->summary.incrementRecoverableFrames();
                                 break;
                         }
                 }
@@ -703,7 +798,6 @@ int decode_audio_frame(struct coded_data *cdata, void *pbuf_data, struct pbuf_st
                 return FALSE;
         }
 
-        uint32_t *audioHdr = (uint32_t *)(void *) cdata->data->data;
         const int packet = cdata->data->pt;
         if(!PT_AUDIO_HAS_FEC(packet) && !cdata->data->m) {
                 LOG(LOG_LEVEL_WARNING) << MOD_NAME << "Failed to recieve M packet!\n";
@@ -724,7 +818,7 @@ int decode_audio_frame(struct coded_data *cdata, void *pbuf_data, struct pbuf_st
         while (cdata != NULL) {
                 char *data;
                 // for definition see rtp_callbacks.h
-                uint32_t *audio_hdr = (uint32_t *)(void *) cdata->data->data;
+                auto *audio_hdr = (uint32_t *)(void *) cdata->data->data;
                 const int pt = cdata->data->pt;
                 enum openssl_mode crypto_mode;
 
@@ -853,7 +947,7 @@ int decode_audio_frame(struct coded_data *cdata, void *pbuf_data, struct pbuf_st
                 cdata = cdata->nxt;
         }
 
-        decoder->summary.update(bufnum);
+        decoder->summary.updateBuffer(bufnum);
 
         if (fecEnabled) {
                 if(!audio_fec_decode_channels(s, fecChannels, received_frame)) {
@@ -993,6 +1087,9 @@ int decode_audio_frame(struct coded_data *cdata, void *pbuf_data, struct pbuf_st
         }
         DEBUG_TIMER_STOP(audio_decode_compute_autoscale);
         DEBUG_TIMER_STOP(audio_decode);
+
+        // Report any of the output for the summary
+        decoder->summary.report();
         
         return TRUE;
 }
