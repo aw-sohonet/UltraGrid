@@ -585,7 +585,6 @@ pbuf_decode(struct pbuf *playout_buf, time_ns_t curr_time,
                 }
                 curr = curr->nxt;
         }
-        LOG(LOG_LEVEL_VERBOSE) << "frame_did_not_decode\n";
         return 0;
 }
 
