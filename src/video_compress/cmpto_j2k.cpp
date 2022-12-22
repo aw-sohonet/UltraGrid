@@ -333,7 +333,7 @@ static struct module * j2k_compress_init(struct module *parent, const char *c_cf
         } else if (strcasecmp("mct", item) == 0 || strcasecmp("nomct", item) == 0) {
             mct = strcasecmp("mct", item) ? 1 : 0;
         } else if (strcasecmp("lossless", item) == 0 || strcasecmp("nolossless", item) == 0) {
-            lossless = strcasecmp("lossless", item) ? 1 : 0;
+            lossless = strcasecmp("lossless", item) ? 0 : 1;
         }
         else if (strncasecmp("mem_limit=", item, strlen("mem_limit=")) == 0) {
             ASSIGN_CHECK_VAL(mem_limit, strchr(item, '=') + 1, 1);
