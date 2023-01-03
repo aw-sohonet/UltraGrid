@@ -538,10 +538,9 @@ static int frame_complete(struct pbuf_node *frame)
         /* seqnum of the last packet in the previous frame, too?     */
         /* i dont think that would reflect correctly of weather this */
         /* frame is complete or not - however we should check for all */
-        /* the packtes of a frame being present - perhaps we should  */
+        /* the packets of a frame being present - perhaps we should  */
         /* keep a bit vector in pbuf_node? LG.  */
-
-        return (frame->mbit == 1 || frame->completed == true);
+        return (frame->mbit == 1 || frame->completed);
 }
 
 int pbuf_is_empty(struct pbuf *playout_buf)
@@ -564,7 +563,7 @@ pbuf_decode(struct pbuf *playout_buf, time_ns_t curr_time,
         pbuf_validate(playout_buf);
 
         curr = playout_buf->frst;
-        while (curr != NULL) {
+        while (curr != nullptr) {
                 if (!curr->decoded 
                                 && curr_time > curr->playout_time
                    ) {
@@ -577,6 +576,7 @@ pbuf_decode(struct pbuf *playout_buf, time_ns_t curr_time,
                         } else {
                                 if (curr_time > curr->playout_time + 1 * NS_IN_SEC) {
                                         curr->completed = true;
+                                        LOG(LOG_LEVEL_ERROR) << "Sending the audio frame as playout requires it\n";
                                 }
                                 debug_msg
                                     ("Unable to decode frame due to missing data (RTP TS=%u)\n",

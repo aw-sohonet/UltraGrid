@@ -75,6 +75,7 @@
 #include <mutex>
 #include <queue>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "DeckLinkAPIVersion.h"
@@ -86,6 +87,7 @@
 #define MAX_RESAMPLE_DELTA_DEFAULT 30
 #define MIN_RESAMPLE_DELTA_DEFAULT 1
 #define TARGET_BUFFER_DEFAULT 2700
+#define AUDIO_BUFFER_OVERFLOW_LIMIT 3500
 
 static void print_output_modes(IDeckLink *);
 static void display_decklink_done(void *state);
@@ -670,7 +672,8 @@ public:
                 // Calculate the average
                 uint32_t average_buffer_depth = (uint32_t)(this->average_buffer_samples.avg());
 
-                int resample_hz = dst_frame_rate = (bmdAudioSampleRate48kHz) * BASE;
+                int resample_hz = 0;
+                dst_frame_rate = (bmdAudioSampleRate48kHz) * BASE;
 
                 // Check to see if our buffered samples has enough to calculate a good average
                 if (this->average_buffer_samples.filled()) {
@@ -1559,8 +1562,8 @@ static bool settings_init(struct state_decklink *s, const char *fmt,
                                         return false;
                                 }
                         }
-                } else if (strstr(ptr, "drift_fix") == ptr) {
-                        s->audio_drift_fixer.m_enabled = true;
+                } else if (strstr(ptr, "no_drift_fix") == ptr) {
+                        s->audio_drift_fixer.m_enabled = false;
                 }
                 else if (strncasecmp(ptr, "maxresample=", strlen("maxresample=")) == 0) {
                         uint32_t max_resample_delta = 0;
@@ -2064,6 +2067,16 @@ static void display_decklink_put_audio_frame(void *state, struct audio_frame *fr
         if (!s->audio_drift_fixer.update(buffered)) {
                 log_msg(LOG_LEVEL_WARNING, MOD_NAME "update drift early exit.\n");
                 return;
+        }
+
+        // If the amount in the buffer would produce an overflow if we insert a new frame, then we want to wait a little
+        // bit before placing this frame into the buffer. This should help us avoid overflows.
+        if(buffered > AUDIO_BUFFER_OVERFLOW_LIMIT) {
+            uint32_t bufferDelta = buffered - AUDIO_BUFFER_OVERFLOW_LIMIT;
+            // Calculate the amount milliseconds we need to sleep for in order to have the buffer fall to our target
+            // Round up the calculation, as it's better to be safe than sorry.
+            int sleepDuration = ceil(1000 * ((double)bufferDelta / (double)bmdAudioSampleRate48kHz));
+            std::this_thread::sleep_for(std::chrono::milliseconds(sleepDuration));
         }
 
         if (s->low_latency) {
