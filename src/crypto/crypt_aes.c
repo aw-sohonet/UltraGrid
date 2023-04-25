@@ -144,8 +144,8 @@ int cipherInit(cipherInstance * cipher, BYTE mode, char *IV)
         return TRUE;
 }
 
-int blockEncrypt(cipherInstance * cipher, keyInstance * key,
-                 BYTE * input, int inputLen, BYTE * outBuffer)
+int blockEncrypt(cipherInstance *cipher, keyInstance *key,
+                 BYTE *input, int inputLen, BYTE *outBuffer)
 {
         int i, k, t, numBlocks;
         u8 block[16], *iv;
@@ -189,7 +189,8 @@ int blockEncrypt(cipherInstance * cipher, keyInstance * key,
         case MODE_CFB1:
                 iv = cipher->IV;
                 for (i = numBlocks; i > 0; i--) {
-                        memcpy(outBuffer, input, 16);
+                        
+memcpy(outBuffer, input, 16);
                         for (k = 0; k < 128; k++) {
                                 rijndaelEncrypt(key->ek, key->Nr, iv, block);
                                 outBuffer[k >> 3] ^=
@@ -330,7 +331,8 @@ int blockDecrypt(cipherInstance * cipher, keyInstance * key,
                 iv = cipher->IV;
                 for (i = numBlocks; i > 0; i--) {
                         memcpy(outBuffer, input, 16);
-                        for (k = 0; k < 128; k++) {
+                        
+for (k = 0; k < 128; k++) {
                                 rijndaelEncrypt(key->ek, key->Nr, iv, block);
                                 for (t = 0; t < 15; t++) {
                                         iv[t] = (iv[t] << 1) | (iv[t + 1] >> 7);

@@ -51,8 +51,11 @@
  * $Date: 2009/12/11 15:29:39 $
  *
  */
+#ifndef ULTRAGRID_PDB_H
+#define ULTRAGRID_PDB_H
 
 #include "tv.h"
+#include "audio/types.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -63,6 +66,26 @@ extern "C" {
  * information about a particular participant in a teleconference.
  *
  */
+
+/**
+ * These structs are used to pass data between decoder and receiver.
+ */
+struct vcodec_state {
+        struct state_video_decoder *decoder;
+        unsigned int max_frame_size; // Maximal frame size to be returned to caller by a decoder to
+                                     // allow him adjust buffers accordingly
+        unsigned int decoded;
+};
+
+struct pbuf_audio_data {
+        audio_frame buffer;
+        struct sockaddr_storage source;      // Network source address
+        struct state_audio_decoder *decoder;
+
+        bool reconfigured;
+        size_t frame_size; // The currently decoded audio frame size (used similarly as vcodec_state::max_frame_size
+                           // to allow caller adjust buffers if needed)
+};
 
 /**
  * Deletes decoder for participant when the participant is deleted
@@ -115,3 +138,4 @@ void                 pdb_iter_done(pdb_iter_t *it);
 }
 #endif
 
+#endif // ULTRAGRID_PDB_H

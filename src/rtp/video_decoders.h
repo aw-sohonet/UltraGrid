@@ -52,6 +52,8 @@
  */
 
 #include "types.h"
+#include "participant_db.hpp"
+#include "rtp/playout_buffer.hpp"
 
 struct coded_data;
 struct display;
@@ -66,7 +68,7 @@ struct tile;
 extern "C" {
 #endif // __cplusplus
 
-int decode_video_frame(struct coded_data *received_data, void *decoder_data, struct pbuf_stats *stats);
+bool decode_video_frame(std::unique_ptr<BufferFrame> bufferFrame, vcodec_state* playoutBufState, PlayoutBufferStats stats);
 
 struct state_video_decoder *video_decoder_init(struct module *parent, enum video_mode,
                 struct display *display, const char *encryption);

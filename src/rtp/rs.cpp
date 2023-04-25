@@ -462,6 +462,7 @@ FecChannel::FecChannel() : initialised(false), outputSize(0), outputCreated(fals
  * @param segmentSize The size of the segments that the original data was broken into.
  */
 FecChannel::FecChannel(uint32_t kBlocks, uint32_t mBlocks, size_t segmentSize) : kBlocks(kBlocks), mBlocks(mBlocks), segmentSize(segmentSize), outputSize(0), outputCreated(false) {
+    assert(this->segmentSize > 0);
     // Initialise the channel
     this->initialise();
 }

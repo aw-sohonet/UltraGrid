@@ -92,7 +92,6 @@
  * and tiles. So the fallback is external decoder. The DXT compression is exceptional
  * in that, that it can be both internally and externally decompressed.
  */
-
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #include "config_unix.h"
@@ -107,17 +106,21 @@
 #include "lib_common.h"
 #include "messaging.h"
 #include "module.h"
+#include "pdb.h"
+#include "participant_db.hpp"
 #include "rtp/fec.h"
 #include "rtp/rtp.h"
 #include "rtp/rtp_callback.h"
-#include "rtp/pbuf.h"
+#include "rtp/playout_buffer.hpp"
 #include "rtp/video_decoders.h"
+#include "threadpool.hpp"
 #include "utils/color_out.h"
 #include "utils/macros.h"
 #include "utils/misc.h"
 #include "utils/synchronized_queue.h"
 #include "utils/thread.h"
 #include "utils/timed_message.h"
+#include "utils/utility.hpp"
 #include "utils/worker.h"
 #include "video.h"
 #include "video_decompress.h"
@@ -145,6 +148,8 @@
 #define MOD_NAME "[video dec.] "
 
 #define FRAMEBUFFER_NOT_READY(decoder) (decoder->frame == NULL && decoder->out_codec != VIDEO_CODEC_END)
+
+#define VIDEO_DECODER_THREAD_COUNT 8
 
 using namespace std;
 using namespace std::string_literals;
@@ -375,6 +380,8 @@ struct state_video_decoder
 
         const struct openssl_decrypt_info *dec_funcs = NULL; ///< decrypt state
         struct openssl_decrypt      *decrypt = NULL; ///< decrypt state
+        std::vector<openssl_decrypt*> decryption_resources;
+        unsigned int thread_count;
 
 #ifdef RECONFIGURE_IN_FUTURE_THREAD
         std::future<bool> reconfiguration_future;
@@ -480,7 +487,7 @@ static void *fec_thread(void *args) {
                                         goto cleanup;
                                 }
 
-                                if (FRAMEBUFFER_NOT_READY(decoder)) {
+                                if (FRAMEBUFFER_NOT_READY(decoder) || (frame != nullptr && frame->color_spec == VIDEO_CODEC_NONE)) {
                                         goto cleanup;
                                 }
 
@@ -574,6 +581,7 @@ struct decompress_data {
         unsigned char *out;
         codec_t internal_codec; // set only if probing (ret == DECODER_GOT_CODEC)
 };
+
 static void *decompress_worker(void *data)
 {
         auto d = (struct decompress_data *) data;
@@ -581,6 +589,7 @@ static void *decompress_worker(void *data)
 
         if (!d->compressed->tiles[d->pos].data)
                 return NULL;
+
         d->ret = decompress_frame(decoder->decompress_state.at(d->pos),
                         (unsigned char *) d->out,
                         (unsigned char *) d->compressed->tiles[d->pos].data,
@@ -601,6 +610,8 @@ static void *decompress_thread(void *args) {
                 (struct state_video_decoder *) args;
         int tile_width = decoder->received_vid_desc.width; // get_video_mode_tiles_x(decoder->video_mode);
         int tile_height = decoder->received_vid_desc.height; // get_video_mode_tiles_y(decoder->video_mode);
+
+        LOG(LOG_LEVEL_INFO) << "Tile Width: " << tile_width << " Tile Height: " << tile_height << "\n";
 
         long long force_putf_timeout = []() {
                 auto drop_policy = commandline_params.find("decoder-drop-policy"s);
@@ -726,6 +737,9 @@ static void decoder_set_video_mode(struct state_video_decoder *decoder, enum vid
                         * get_video_mode_tiles_y(decoder->video_mode);
 }
 
+ADD_TO_PARAM("decode-thread-count", "* decode-thread-count=<Thread Count>\n"
+             "  The number of threads to use when decrypting packets.\n");
+
 /**
  * @brief Initializes video decompress state.
  * @param video_mode  video_mode expected to be received from network
@@ -753,6 +767,7 @@ struct state_video_decoder *video_decoder_init(struct module *parent,
                                 delete s;
                                 return NULL;
                 }
+
                 if (s->dec_funcs->init(&s->decrypt, encryption) != 0) {
                         log_msg(LOG_LEVEL_FATAL, "Unable to create decompress!\n");
                         delete s;
@@ -760,14 +775,44 @@ struct state_video_decoder *video_decoder_init(struct module *parent,
                 }
         }
 
-        decoder_set_video_mode(s, video_mode);
-
-        if(!video_decoder_register_display(s, display)) {
-                delete s;
-                return NULL;
+    // Have the thread count be configurable via a parameter. Otherwise, default to the
+    // full amount of available threads.
+    s->thread_count = VIDEO_DECODER_THREAD_COUNT;
+    const char* decodeThreadCount = get_commandline_param("decode-thread-count");
+    if(decodeThreadCount) {
+        int thread_count = std::stoi(decodeThreadCount);
+        if(thread_count > 0) {
+            s->thread_count = static_cast<unsigned int>(thread_count);
+            LOG(LOG_LEVEL_INFO) << "The decoder thread count has been set to: " << s->thread_count << "\n";
         }
+    }
 
-        return s;
+    // Create a decryption structure per available thread if decryption is set.
+    for(unsigned int i = 0; i < s->thread_count; i++) {
+        // Hand in a pointer from the stack, this can then be copied into a vector
+        openssl_decrypt* decryption_resource = nullptr;
+        if (encryption && s->dec_funcs->init(&decryption_resource, encryption) != 0) {
+            log_msg(LOG_LEVEL_FATAL, MOD_NAME "Unable to initialize decryption\n");
+            delete s;
+            return NULL;
+        }
+        // Copy the pointer into the vector
+        s->decryption_resources.push_back(decryption_resource);
+    }
+
+    // Print out a log to let the user know stream decryption has been enabled
+    if(encryption) {
+        log_msg(LOG_LEVEL_INFO, MOD_NAME "Enabled stream decryption.\n");
+    }
+
+    decoder_set_video_mode(s, video_mode);
+
+    if(!video_decoder_register_display(s, display)) {
+            delete s;
+            return NULL;
+    }
+
+    return s;
 }
 
 /**
@@ -943,6 +988,14 @@ void video_decoder_destroy(struct state_video_decoder *decoder)
 
         if (decoder->dec_funcs) {
                 decoder->dec_funcs->destroy(decoder->decrypt);
+        }
+
+        if(!decoder->decryption_resources.empty()) {
+            for(auto decryption_resource : decoder->decryption_resources) {
+                if(decryption_resource) {
+                    decoder->dec_funcs->destroy(decryption_resource);
+                }
+            }
         }
 
         video_decoder_remove_display(decoder);
@@ -1467,6 +1520,221 @@ static int check_for_mode_change(struct state_video_decoder *decoder,
 #define max(a, b)       (((a) > (b))? (a): (b))
 
 /**
+ * A structure to define the FEC Data.
+ */
+struct FecData {
+    // K is the amount of blocks for the original data
+    unsigned int k;
+    // M is the amount of additional blocks
+    unsigned int m;
+    // C and Seed and LDGM specific variables
+    unsigned int c;
+    unsigned int seed;
+};
+
+struct PacketData {
+    char* data;
+    unsigned int* header;
+    size_t length;
+    size_t position;
+    unsigned int substream;
+};
+
+/**
+ *  @brief A function for getting the FEC data from the packet. This is done
+ *         by checking the packet type, and then extracting the data (or returning)
+ *         a default otherwise.
+ */
+FecData getFecData(rtp_packet& pckt) {
+    FecData fecData;
+    // Check if the packet is a FEC packet type
+    if(PT_VIDEO_HAS_FEC(pckt.pt)) {
+        // Grab the FEC parts of the header from the packet header
+        unsigned int* header = (unsigned int *) pckt.data;
+        unsigned int fecHeader = ntohl(header[3]);
+        unsigned int fecSeed = ntohl(header[4]);
+        
+        // Convert the bit-shifted header information back into the FEC
+        // data, and write back into the object.
+        fecData.k = fecHeader >> 19;
+        fecData.m = 0x1fff & (fecHeader >> 6);
+        fecData.c = 0x3f & fecHeader;
+        fecData.seed = fecSeed;
+    }
+    else {
+        // Select a default for all of the FEC values if the packet is not
+        // an FEC packet.
+        fecData.k = 0;
+        fecData.m = 0;
+        fecData.c = 0;
+        fecData.k = 0;
+    }
+    return fecData;
+}
+
+/**
+ *  @brief Check the decoder to ensure it holds the correct state for the decryption object.
+ */
+bool checkDecryption(state_video_decoder* decoder, rtp_packet& pckt) {
+    // Figure out if the packet is encrypted and whether or not the decoder
+    // decryption structure has been initialised.
+    bool isPacketEncrypted = PT_VIDEO_IS_ENCRYPTED(pckt.pt);
+    bool decoderDecryptionIsSet = decoder->decrypt != nullptr;
+
+    // If the packet has been encrypted and there is no decryption state or
+    // if the packet is not encrypted and there is a decryption state then log an error
+    if ((isPacketEncrypted && !decoderDecryptionIsSet) || (!isPacketEncrypted && decoderDecryptionIsSet)) {
+        log_msg(LOG_LEVEL_ERROR, decoderDecryptionIsSet ? NOT_ENCRYPTED_ERR : ENCRYPTED_ERR);
+        return false;
+    }
+    else {
+        return true;
+    }
+}
+
+/**
+ * @brief A function for building up a frame from a range of packets. This function should be thread safe,
+ *        but it does perform concurrent writes into the same block of memory. This should not be a problem
+ *        as each packet should represent a unique area of the memory OR be a duplicate block of memory (and therefore)
+ *        not matter in the race condition this generates.
+ */
+void buildFrame(const std::vector<PacketData>& packetDataVec, UIntPair block, bool decrypt, openssl_mode cryptoMode,
+                state_video_decoder* decoder, unsigned int packetType, size_t bufferLength, video_frame* frame,
+                map<int, int>* fecPacketData, openssl_decrypt* decryption)
+{
+    int prints = 0;
+
+    // Get an iterator to the beginning of the block being processed by this function
+    auto packetDataIt = packetDataVec.begin() + block.first;
+    for(unsigned int i = 0; i < block.second; i++) {
+        // Get the packet data from the iterator
+        PacketData packetData = *packetDataIt;
+        // The given packet length is always larger or equal to the 
+        // size of the decrypted packet
+        char decryptedData[packetData.length];
+        if(decrypt) {
+            size_t headerSize = packetType == PT_ENCRYPT_VIDEO ? sizeof(video_payload_hdr_t) : sizeof(fec_payload_hdr_t);
+            int decryptedLength = decoder->dec_funcs->decrypt(decryption, packetData.data, packetData.length,
+                                                              (char *) packetData.header, headerSize, decryptedData, cryptoMode);
+            packetData.data = decryptedData;
+            packetData.length = decryptedLength;
+        }
+
+        // Create a context to capture the lock whilst writing to the fecPacketData
+        {
+            std::unique_lock<std::mutex> stateLock = std::unique_lock<std::mutex>(decoder->lock);
+            fecPacketData[packetData.substream][(int) packetData.position] = packetData.length;
+        }
+
+        // Ensure that the data we are given is valid
+        if(packetData.length > 0) {
+            size_t len = packetData.length;
+
+            if ((packetType == PT_VIDEO || packetType == PT_ENCRYPT_VIDEO) && decoder->decoder_type == LINE_DECODER) {
+                struct tile* tile = nullptr;
+
+                if (!decoder->merged_fb) {
+                        tile = vf_get_tile(decoder->frame, (int) packetData.substream);
+                } else {
+                        tile = vf_get_tile(decoder->frame, 0);
+                }
+
+                line_decoder *line_decoder = &decoder->line_decoder[packetData.substream];
+
+                // MAGIC, don't touch it, you definitely break it
+                // *source* is data from network, *destination* is frame buffer
+
+                // Compute Y pos in source frame and convert it to
+                // byte offset in the destination frame
+                int y = (packetData.position / line_decoder->src_linesize) * line_decoder->dst_pitch;
+
+                // Compute X pos in source frame
+                int sX = packetData.position % line_decoder->src_linesize;
+
+                // Convert X pos from source frame into the destination frame.
+                // it is byte offset from the beginning of a line
+                int dX = sX * line_decoder->conv_num / line_decoder->conv_den;
+
+                // Pointer to data payload in packet
+                auto source = reinterpret_cast<unsigned char*>(packetData.data);
+
+                /* copy whole packet that can span several lines.
+                    * we need to clip data (v210 case) or center data (RGBA, R10k cases)
+                    */
+                while (len > 0) {
+                    /* len id payload length in source BPP
+                        * decoder needs len in destination BPP, so convert it
+                        */
+                    int l = len * line_decoder->conv_num / line_decoder->conv_den;
+
+                    /* do not copy multiple lines, we need to
+                        * copy (& clip, center) line by line
+                        */
+                    if (l + dX > (int) line_decoder->dst_linesize) {
+                        l = line_decoder->dst_linesize - dX;
+                    }
+
+                    /* compute byte offset in destination frame */
+                    int offset = y + dX;
+
+                    /* watch the SEGV */
+                    if (l + line_decoder->base_offset + offset <= tile->data_len) {
+                        /*decode frame:
+                            * we have offset for destination
+                            * we update source contiguously
+                            * we pass {r,g,b}shifts */
+                        line_decoder->decode_line((unsigned char*)tile->data + line_decoder->base_offset + offset, source, l,
+                                        line_decoder->shifts[0], line_decoder->shifts[1],
+                                        line_decoder->shifts[2]);
+                        /* we decoded one line (or a part of one line) to the end of the line
+                            * so decrease *source* len by 1 line (or that part of the line */
+                        len -= line_decoder->src_linesize - sX;
+                        /* jump in source by the same amount */
+                        source += line_decoder->src_linesize - sX;
+                    }
+                    else {
+                        /* this should not ever happen as we call reconfigure before each packet
+                            * iff reconfigure is needed. But if it still happens, something is terribly wrong
+                            * say it loudly
+                            */
+                        if((prints % 100) == 0) {
+                                log_msg(LOG_LEVEL_ERROR, "WARNING!! Discarding input data as frame buffer is too small.\n"
+                                                "Well this should not happened. Expect troubles pretty soon.\n");
+                        }
+                        prints++;
+                        len = 0;
+                    }
+                    /* each new line continues from the beginning */
+                    dX = 0;        /* next line from beginning */
+                    sX = 0;
+                    y += line_decoder->dst_pitch;  /* next line */
+                }
+            } 
+            // PT_VIDEO_LDGM or external decoder
+            else { 
+                if (packetData.position + len > bufferLength) {
+                    if((prints % 100) == 0) {
+                        log_msg(LOG_LEVEL_ERROR, "WARNING!! Discarding input data as frame buffer is too small.\n"
+                                        "Well this should not happened. Expect troubles pretty soon.\n");
+                    }
+                    prints++;
+                    len = max<int>(0, bufferLength - packetData.position);
+                }
+
+                if(packetData.data) {
+                    // Simply copy the available memory into the frame. Meaningful processing will
+                    // be completed on the data further on
+                    memcpy(frame->tiles[packetData.substream].data + packetData.position, (unsigned char*) packetData.data, len);
+                }
+            }
+        }
+        
+        // Iterate the packet iterator
+        packetDataIt++;
+    }
+}
+
+/**
  * @brief Decodes a participant buffer representing one video frame.
  * @param cdata        PBUF buffer
  * @param decoder_data @ref vcodec_state containing decoder state and some additional data
@@ -1475,392 +1743,371 @@ static int check_for_mode_change(struct state_video_decoder *decoder,
  *                     decoding may fail in some subsequent (asynchronous) steps.
  * @retval FALSE       if decoding failed
  */
-int decode_video_frame(struct coded_data *cdata, void *decoder_data, struct pbuf_stats *stats)
+bool decode_video_frame(std::unique_ptr<BufferFrame> bufferFrame, vcodec_state* playoutBufState, PlayoutBufferStats stats)
 {
-        struct vcodec_state *pbuf_data = (struct vcodec_state *) decoder_data;
-        struct state_video_decoder *decoder = pbuf_data->decoder;
+    // Fetch the decoder from the state
+    state_video_decoder* decoder = playoutBufState->decoder;
 
-        int ret = TRUE;
-        rtp_packet *pckt = NULL;
-        int prints=0;
-        int max_substreams = decoder->max_substreams;
-        uint32_t ssrc = 0U;
-        unsigned int frame_size = 0;
+    bool ret = true;
+    rtp_packet* pckt = NULL;
+    int prints=0;
+    int maxSubstreams = decoder->max_substreams;
+    uint32_t ssrc = 0U;
+    unsigned int frame_size = 0;
 
-        vector<uint32_t> buffer_num(max_substreams);
-        // the following is just FEC related optimalization - normally we fill up
-        // allocated buffers when we have compressed data. But in case of FEC, there
-        // is just the FEC buffer present, so we point to it instead to copying
-        struct video_frame *frame = vf_alloc(max_substreams);
-        frame->callbacks.data_deleter = vf_data_deleter;
-        unique_ptr<map<int, int>[]> pckt_list(new map<int, int>[max_substreams]);
+    std::vector<uint32_t> bufferNum(maxSubstreams);
 
-        int k = 0, m = 0, c = 0, seed = 0; // LDGM
-        int buffer_number = 0;
-        int buffer_length = 0;
-        int pt = 0;
-        bool buffer_swapped = false;
+    // Allocate memory for the video frame being built
+    struct video_frame* frame = vf_alloc(maxSubstreams);
+    frame->callbacks.data_deleter = vf_data_deleter;
+    // The following is just FEC related optimisation - normally we fill up
+    // allocated buffers when we have compressed data. But in case of FEC, there
+    // is just the FEC buffer present, so we point to it instead of copying
+    unique_ptr<map<int, int>[]> fecPacketData(new map<int, int>[maxSubstreams]);
 
-        // We have no framebuffer assigned, exitting
-        if(!decoder->display) {
+    FecData fecData = {};
+
+    int bufferNumber = 0;
+    int bufferLength = 0;
+    int packetType = 0;
+    bool decrypt;
+
+    // Check if there is a frame buffer assigned to the decoder. If not, then
+    // error out.
+    if(!decoder->display) {
+        LOG(LOG_LEVEL_ERROR) << "No frame buffer has been assigned to the decoder\n";
+        // Free the video frame we assigned and return a failure
+        vf_free(frame);
+        return false;
+    }
+
+#ifdef RECONFIGURE_IN_FUTURE_THREAD
+    // check if we are not in the middle of reconfiguration
+    if (decoder->reconfiguration_in_progress) {
+        std::future_status status =
+            decoder->reconfiguration_future.wait_until(std::chrono::system_clock::now());
+        if (status == std::future_status::ready) {
+            bool ret = decoder->reconfiguration_future.get();
+            if (ret) {
+                decoder->frame = display_get_frame(decoder->display);
+            } else {
+                log_msg(LOG_LEVEL_ERROR, "Decoder reconfiguration failed!!!\n");
+                decoder->frame = NULL;
+            }
+            decoder->reconfiguration_in_progress = false;
+        } else {
+            // skip the frame if we are not yet reconfigured
+            vf_free(frame);
+            return FALSE;
+        }
+    }
+#endif
+
+    // A messaging system used by other threads to indicate that a reconfiguration is needed. Pop the messages from the queue
+    // and check the contents of it. (Not sure this is thread safe as there doesn't appear to be a lock, when other threads could
+    // be writing into it).
+    main_msg_reconfigure *msg_reconf;
+    while ((msg_reconf = decoder->msg_queue.pop(true /* nonblock */))) {
+        if (reconfigure_if_needed(decoder, msg_reconf->desc, msg_reconf->force, msg_reconf->compress_internal_codec)) {
+#ifdef RECONFIGURE_IN_FUTURE_THREAD
+            vf_free(frame);
+            return FALSE;
+#endif
+        }
+        if (msg_reconf->last_frame) {
+                decoder->fec_queue.push(std::move(msg_reconf->last_frame));
+        }
+        delete msg_reconf;
+    }
+
+    // Validate the decryption settings
+    if(bufferFrame->size() > 0) {
+        if(auto packetWrapper = bufferFrame->getPacket(0)) {
+            // Extract the reference from the optional
+            rtp_packet& packet = packetWrapper->get();
+
+            // Validate decryption settings are correct
+            if(!checkDecryption(decoder, packet)) {
+                // Free the video frame we assigned and return a failure
                 vf_free(frame);
-                return FALSE;
-        }
+                return false;
+            }
 
-#ifdef RECONFIGURE_IN_FUTURE_THREAD
-        // check if we are not in the middle of reconfiguration
-        if (decoder->reconfiguration_in_progress) {
-                std::future_status status =
-                        decoder->reconfiguration_future.wait_until(std::chrono::system_clock::now());
-                if (status == std::future_status::ready) {
-                        bool ret = decoder->reconfiguration_future.get();
-                        if (ret) {
-                                decoder->frame = display_get_frame(decoder->display);
-                        } else {
-                                log_msg(LOG_LEVEL_ERROR, "Decoder reconfiguration failed!!!\n");
-                                decoder->frame = NULL;
-                        }
-                        decoder->reconfiguration_in_progress = false;
-                } else {
-                        // skip the frame if we are not yet reconfigured
-                        vf_free(frame);
-                        return FALSE;
-                }
-        }
-#endif
+            // Get any FEC settings
+            fecData = getFecData(packet);
+            decrypt = PT_VIDEO_IS_ENCRYPTED(packet.pt);
 
-        main_msg_reconfigure *msg_reconf;
-        while ((msg_reconf = decoder->msg_queue.pop(true /* nonblock */))) {
-                if (reconfigure_if_needed(decoder, msg_reconf->desc, msg_reconf->force, msg_reconf->compress_internal_codec)) {
+            if (!PT_VIDEO_HAS_FEC(packet.pt))
+            {
+                /* Critical section
+                 * each thread *MUST* wait here if this condition is true
+                 */
+                // Set the pointer to the beginning of the header from the packet
+                auto header = (unsigned int*) packet.data;
+                if (check_for_mode_change(decoder, header)) {
 #ifdef RECONFIGURE_IN_FUTURE_THREAD
-                        vf_free(frame);
-                        return FALSE;
+                    vf_free(frame);
+                                return FALSE;
 #endif
                 }
-                if (msg_reconf->last_frame) {
-                        decoder->fec_queue.push(std::move(msg_reconf->last_frame));
+
+                // hereafter, display framebuffer can be used, so we
+                // check if we got it
+                if (FRAMEBUFFER_NOT_READY(decoder)) {
+                    vf_free(frame);
+                    return FALSE;
                 }
-                delete msg_reconf;
+            }
         }
+    }
+    else {
+        LOG(LOG_LEVEL_ERROR) << "Frame buffer has no packets for decoding\n";
+        // Free the video frame we assigned and return a failure
+        vf_free(frame);
+        return false;
+    }
 
-        while (cdata != NULL) {
-                uint32_t tmp;
-                uint32_t *hdr;
-                int len;
-                uint32_t offset;
-                unsigned char *source;
-                char *data;
-                uint32_t data_pos;
-                uint32_t substream;
-                pckt = cdata->data;
-                enum openssl_mode crypto_mode = MODE_AES128_NONE;
+    unsigned int largestSubstream = 0;
+    openssl_mode cryptoMode = MODE_AES128_NONE;
 
-                pt = pckt->pt;
-                hdr = (uint32_t *)(void *) pckt->data;
-                data_pos = ntohl(hdr[1]);
-                tmp = ntohl(hdr[0]);
-                substream = tmp >> 22;
-                buffer_number = tmp & 0x3fffff;
-                buffer_length = ntohl(hdr[2]);
-                ssrc = pckt->ssrc;
+    ThreadPool<openssl_decrypt*> threadPool = ThreadPool<openssl_decrypt*>(decoder->decryption_resources, decoder->thread_count);
 
-                if (PT_VIDEO_HAS_FEC(pt)) {
-                        tmp = ntohl(hdr[3]);
-                        k = tmp >> 19;
-                        m = 0x1fff & (tmp >> 6);
-                        c = 0x3f & tmp;
-                        seed = ntohl(hdr[4]);
-                }
+    std::vector<PacketData> videoPackets = std::vector<PacketData>();
+    PacketData packetData;
 
-                if (PT_VIDEO_IS_ENCRYPTED(pt)) {
-                        if(!decoder->decrypt) {
-                                log_msg(LOG_LEVEL_ERROR, ENCRYPTED_ERR);
-                                ERROR_GOTO_CLEANUP
-                        }
-                } else {
-                        if(decoder->decrypt) {
-                                log_msg(LOG_LEVEL_ERROR, NOT_ENCRYPTED_ERR);
-                                ERROR_GOTO_CLEANUP
-                        }
-                }
+    // Calculate all blocks for every packet except the last one (because that needs to be sent last)
+    Blocks packetBlocks = createBlocks(bufferFrame->size(), 8);
 
-                switch (pt) {
-                case PT_VIDEO:
-                        len = pckt->data_len - sizeof(video_payload_hdr_t);
-                        data = (char *) hdr + sizeof(video_payload_hdr_t);
-                        break;
-                case PT_VIDEO_RS:
-                case PT_VIDEO_LDGM:
-                        len = pckt->data_len - sizeof(fec_payload_hdr_t);
-                        data = (char *) hdr + sizeof(fec_payload_hdr_t);
-                        break;
-                case PT_ENCRYPT_VIDEO:
-                case PT_ENCRYPT_VIDEO_LDGM:
-                case PT_ENCRYPT_VIDEO_RS:
-                        {
-				size_t media_hdr_len = pt == PT_ENCRYPT_VIDEO ? sizeof(video_payload_hdr_t) : sizeof(fec_payload_hdr_t);
-                                len = pckt->data_len - sizeof(crypto_payload_hdr_t) - media_hdr_len;
-				data = (char *) hdr + sizeof(crypto_payload_hdr_t) + media_hdr_len;
-                                uint32_t crypto_hdr = ntohl(*(uint32_t *)(void *)((char *) hdr + media_hdr_len));
-                                crypto_mode = (enum openssl_mode) (crypto_hdr >> 24);
-				if (crypto_mode == MODE_AES128_NONE || crypto_mode > MODE_AES128_MAX) {
-					log_msg(LOG_LEVEL_WARNING, "Unknown cipher mode: %d\n", (int) crypto_mode);
-					ret = FALSE;
-					goto cleanup;
-				}
-                        }
-                        break;
-                default:
-                        if (pt == PT_Unassign_Type95) {
-                                LOG_ONCE(LOG_LEVEL_WARNING, to_fourcc('U', 'V', 'P', 'T'), MOD_NAME "Unassigned PT 95 received, ignoring.\n");
-                        } else {
-                                LOG(LOG_LEVEL_WARNING) << MOD_NAME "Unknown packet type: " << pckt->pt << ".\n";
-                        }
-                        ret = FALSE;
-                        goto cleanup;
-                }
+    for(std::unique_ptr<rtp_packet>& packet : *bufferFrame) {
+        // Set up a pointer to the header of the packet
+        unsigned int* header;
+        
+        // Create variables for saving the length of the data in the packet,
+        // a pointer to the data itself, the position of the data in the frame,
+        // and the datas substream. We are also interested if the data is 
+        // encrypted and with what mode
+        char* data;
+        size_t dataLen;
+        size_t dataPos;
+        unsigned int substream;
 
-                if ((int) substream >= max_substreams) {
-                        log_msg(LOG_LEVEL_WARNING, "[decoder] received substream ID %d. Expecting at most %d substreams. Did you set -M option?\n",
-                                        substream, max_substreams);
-                        // the guess is valid - we start with highest substream number (anytime - since it holds a m-bit)
-                        // in next iterations, index is valid
-                        enum video_mode video_mode =
-                                guess_video_mode(substream + 1);
-                        if (video_mode != VIDEO_UNKNOWN) {
-                                log_msg(LOG_LEVEL_NOTICE, "[decoder] Guessing mode: ");
-                                decoder_set_video_mode(decoder, video_mode);
-                                decoder->received_vid_desc.width = 0; // just for sure, that we reconfigure in next iteration
-                                log_msg(LOG_LEVEL_NOTICE, "%s. Check if it is correct.\n", get_video_mode_description(decoder->video_mode));
-                        } else {
-                                log_msg(LOG_LEVEL_FATAL, "[decoder] Unknown video mode!\n");
-                                handle_error(1);
-                        }
-                        // we need skip this frame (variables are illegal in this iteration
-                        // and in case that we got unrecognized number of substreams - exit
-                        ret = FALSE;
-                        goto cleanup;
-                }
+        // Create variables for tracking different items in the loop
+        unsigned int offset;
+        
+        // Extract the ssrc, and packet type from packet
+        packetType = packet->pt;
+        ssrc = packet->ssrc;
 
-                char plaintext[len]; // will be actually shorter
-                if (PT_VIDEO_IS_ENCRYPTED(pt)) {
-                        int data_len;
+        // Set the pointer to the beginning of the header from the packet
+        header = (unsigned int*) packet->data;
+        // The substream and buffer number are in the 1st element of the header
+        unsigned int headerSubBuf = ntohl(header[0]);
+        substream = headerSubBuf >> 22;
+        bufferNumber = headerSubBuf & 0x3fffff;
+        // The position of the data is in the 2nd element of the header
+        dataPos = (size_t) ntohl(header[1]);
+        // The buffer length is in the 3rd element of the header
+        bufferLength = ntohl(header[2]);
 
-                        if((data_len = decoder->dec_funcs->decrypt(decoder->decrypt,
-                                        data, len,
-                                        (char *) hdr, pt == PT_ENCRYPT_VIDEO ?
-                                        sizeof(video_payload_hdr_t) : sizeof(fec_payload_hdr_t),
-                                        plaintext, crypto_mode)) == 0) {
-                                goto next_packet;
-                        }
-                        data = (char *) plaintext;
-                        len = data_len;
-                }
+        // Store the largest seen substream so we can check to see if the decoder
+        // is correctly configured
+        largestSubstream = std::max<unsigned int>(largestSubstream, substream);
 
-                if (!PT_VIDEO_HAS_FEC(pt))
+        switch(packetType) {
+            // If the video is not encrypted, then the data and the length are just simple functions
+            // of manipulating the base of the packet and it's length by the size of the header.
+            case PT_VIDEO:
                 {
-                        /* Critical section
-                         * each thread *MUST* wait here if this condition is true
-                         */
-                        if (check_for_mode_change(decoder, hdr)) {
-#ifdef RECONFIGURE_IN_FUTURE_THREAD
-                                vf_free(frame);
-                                return FALSE;
-#endif
-                        }
-
-                        // hereafter, display framebuffer can be used, so we
-                        // check if we got it
-                        if (FRAMEBUFFER_NOT_READY(decoder)) {
-                                vf_free(frame);
-                                return FALSE;
-                        }
+                    size_t videoPayloadHeaderSize = sizeof(video_payload_hdr_t);
+                    dataLen = packet->data_len - videoPayloadHeaderSize;
+                    data = (char*)(packet->data) + videoPayloadHeaderSize;
                 }
-
-                buffer_num[substream] = buffer_number;
-                frame->tiles[substream].data_len = buffer_length;
-                pckt_list[substream][data_pos] = len;
-
-                if ((pt == PT_VIDEO || pt == PT_ENCRYPT_VIDEO) && decoder->decoder_type == LINE_DECODER) {
-                        struct tile *tile = NULL;
-                        if(!buffer_swapped) {
-                                wait_for_framebuffer_swap(decoder);
-                                buffer_swapped = true;
-                                unique_lock<mutex> lk(decoder->lock);
-                                decoder->buffer_swapped = false;
-                        }
-
-                        if (!decoder->merged_fb) {
-                                tile = vf_get_tile(decoder->frame, substream);
-                        } else {
-                                tile = vf_get_tile(decoder->frame, 0);
-                        }
-
-                        struct line_decoder *line_decoder =
-                                &decoder->line_decoder[substream];
-
-                        /* End of critical section */
-
-                        /* MAGIC, don't touch it, you definitely break it
-                         *  *source* is data from network, *destination* is frame buffer
-                         */
-
-                        /* compute Y pos in source frame and convert it to
-                         * byte offset in the destination frame
-                         */
-                        int y = (data_pos / line_decoder->src_linesize) * line_decoder->dst_pitch;
-
-                        /* compute X pos in source frame */
-                        int s_x = data_pos % line_decoder->src_linesize;
-
-                        /* convert X pos from source frame into the destination frame.
-                         * it is byte offset from the beginning of a line.
-                         */
-                        int d_x = s_x * line_decoder->conv_num / line_decoder->conv_den;
-
-                        /* pointer to data payload in packet */
-                        source = (unsigned char*)(data);
-
-                        /* copy whole packet that can span several lines.
-                         * we need to clip data (v210 case) or center data (RGBA, R10k cases)
-                         */
-                        while (len > 0) {
-                                /* len id payload length in source BPP
-                                 * decoder needs len in destination BPP, so convert it
-                                 */
-                                int l = len * line_decoder->conv_num / line_decoder->conv_den;
-
-                                /* do not copy multiple lines, we need to
-                                 * copy (& clip, center) line by line
-                                 */
-                                if (l + d_x > (int) line_decoder->dst_linesize) {
-                                        l = line_decoder->dst_linesize - d_x;
-                                }
-
-                                /* compute byte offset in destination frame */
-                                offset = y + d_x;
-
-                                /* watch the SEGV */
-                                if (l + line_decoder->base_offset + offset <= tile->data_len) {
-                                        /*decode frame:
-                                         * we have offset for destination
-                                         * we update source contiguously
-                                         * we pass {r,g,b}shifts */
-                                        line_decoder->decode_line((unsigned char*)tile->data + line_decoder->base_offset + offset, source, l,
-                                                        line_decoder->shifts[0], line_decoder->shifts[1],
-                                                        line_decoder->shifts[2]);
-                                        /* we decoded one line (or a part of one line) to the end of the line
-                                         * so decrease *source* len by 1 line (or that part of the line */
-                                        len -= line_decoder->src_linesize - s_x;
-                                        /* jump in source by the same amount */
-                                        source += line_decoder->src_linesize - s_x;
-                                } else {
-                                        /* this should not ever happen as we call reconfigure before each packet
-                                         * iff reconfigure is needed. But if it still happens, something is terribly wrong
-                                         * say it loudly
-                                         */
-                                        if((prints % 100) == 0) {
-                                                log_msg(LOG_LEVEL_ERROR, "WARNING!! Discarding input data as frame buffer is too small.\n"
-                                                                "Well this should not happened. Expect troubles pretty soon.\n");
-                                        }
-                                        prints++;
-                                        len = 0;
-                                }
-                                /* each new line continues from the beginning */
-                                d_x = 0;        /* next line from beginning */
-                                s_x = 0;
-                                y += line_decoder->dst_pitch;  /* next line */
-                        }
-                } else { /* PT_VIDEO_LDGM or external decoder */
-                        if(!frame->tiles[substream].data) {
-                                frame->tiles[substream].data = (char *) malloc(buffer_length + PADDING);
-                        }
-
-                        if (data_pos + len > (unsigned) buffer_length) {
-                                if((prints % 100) == 0) {
-                                        log_msg(LOG_LEVEL_ERROR, "WARNING!! Discarding input data as frame buffer is too small.\n"
-                                                        "Well this should not happened. Expect troubles pretty soon.\n");
-                                }
-                                prints++;
-                                len = max<int>(0, buffer_length - data_pos);
-                        }
-                        memcpy(frame->tiles[substream].data + data_pos, (unsigned char*) data,
-                                len);
+                break;
+            case PT_VIDEO_RS:
+            case PT_VIDEO_LDGM:
+                {
+                    size_t fecPayloadHeaderSize = sizeof(fec_payload_hdr_t);
+                    dataLen = packet->data_len - fecPayloadHeaderSize;
+                    data = (char*)(packet->data) + fecPayloadHeaderSize;
                 }
+                break;
+            // If the video is encrypted then we need to extract the crypto mode so that we can properly 
+            // decrypt the data
+            case PT_ENCRYPT_VIDEO:
+            case PT_ENCRYPT_VIDEO_LDGM:
+            case PT_ENCRYPT_VIDEO_RS:
+                {
+                    // Grab the size of the headers
+                    size_t cryptoHeaderSize = sizeof(crypto_payload_hdr_t);
+                    size_t mediaHeaderSize;
+                    if(packetType == PT_ENCRYPT_VIDEO) {
+                        mediaHeaderSize = sizeof(video_payload_hdr_t);
+                    }
+                    else {
+                        mediaHeaderSize = sizeof(fec_payload_hdr_t);
+                    }
 
-next_packet:
-                cdata = cdata->nxt;
-        }
+                    // Calculate the length of the data and the data
+                    dataLen = packet->data_len - cryptoHeaderSize - mediaHeaderSize;
+                    data = (char*)(packet->data) + cryptoHeaderSize + mediaHeaderSize;
+                    // Calculate where the crypto header is and grab the 
+                    // first 8 bits for the crypto mode
+                    unsigned int cryptoHeader = ntohl(*(header + (mediaHeaderSize / sizeof(unsigned int))));
+                    cryptoMode = (openssl_mode)(cryptoHeader >> 24);
 
-        if(!pckt) {
-                vf_free(frame);
-                return FALSE;
-        }
-
-        if (FRAMEBUFFER_NOT_READY(decoder) && (pt == PT_VIDEO || pt == PT_ENCRYPT_VIDEO)) {
-                ret = FALSE;
-                goto cleanup;
-        }
-
-        assert(ret == TRUE);
-
-        for(int i = 0; i < max_substreams; ++i) {
-                frame_size += frame->tiles[i].data_len;
-        }
-
-        /// Zero missing parts of framebuffer - this may be useful for compressed video
-        /// (which may be also with FEC - but we use systematic codes therefore it may
-        /// benefit from that as well).
-        if (decoder->decoder_type != LINE_DECODER) {
-                for(int i = 0; i < max_substreams; ++i) {
-                        unsigned int last_end = 0;
-                        for (auto const & packets : pckt_list[i]) {
-                                unsigned int start = packets.first;
-                                unsigned int len = packets.second;
-                                if (last_end < start) {
-                                        memset(frame->tiles[i].data + last_end, 0, start - last_end);
-                                }
-                                last_end = start + len;
-                        }
-                        if (last_end < frame->tiles[i].data_len) {
-                                memset(frame->tiles[i].data + last_end, 0, frame->tiles[i].data_len - last_end);
-                        }
+                    // Check we have been given a valid crypto mode
+                    if(cryptoMode == MODE_AES128_NONE || cryptoMode > MODE_AES128_MAX) {
+                        LOG(LOG_LEVEL_WARNING) << "Unknown cipher mode: " << (int) cryptoMode << " - Dropping frame\n";
+                        ret = false;
+                        goto cleanup;
+                    }
+                }
+                break;
+            default:
+                {
+                    if (packetType == PT_Unassign_Type95) {
+                        LOG_ONCE(LOG_LEVEL_WARNING, to_fourcc('U', 'V', 'P', 'T'), MOD_NAME "Unassigned PT 95 received, ignoring.\n");
+                    }
+                    else {
+                        LOG(LOG_LEVEL_WARNING) << MOD_NAME "Unknown packet type: " << pckt->pt << ".\n";
+                    }
+                    ret = false;
+                    goto cleanup;
                 }
         }
 
-        // format message
+        // Store the packets in a list that we can process later
+        packetData.position = dataPos;
+        packetData.substream = substream;
+        packetData.length = dataLen;
+        packetData.data = data;
+        packetData.header = header;
+        videoPackets.emplace_back(packetData);
+
+        bufferNum[substream] = bufferNumber;
+    }
+
+    // Check to see if the largest substream found when processing the packets exceeds 
+    // the maximum set for the frame.
+    if ((int) largestSubstream >= maxSubstreams) {
+        log_msg(LOG_LEVEL_WARNING, "[decoder] received substream ID %d. Expecting at most %d substreams. Did you set -M option?\n", largestSubstream, maxSubstreams);
+        // The guess is valid - we start with highest substream number (anytime - since it holds a m-bit)
+        // in next iterations, index is valid
+        video_mode video_mode = guess_video_mode(largestSubstream + 1);
+        if (video_mode != VIDEO_UNKNOWN) {
+            // Try reconfiguring the decoder
+            log_msg(LOG_LEVEL_NOTICE, "[decoder] Guessing mode: ");
+            decoder_set_video_mode(decoder, video_mode);
+            // Just for sure, that we reconfigure in next iteration
+            decoder->received_vid_desc.width = 0;
+            log_msg(LOG_LEVEL_NOTICE, "%s. Check if it is correct.\n", get_video_mode_description(decoder->video_mode));
+        } 
+        else {
+            log_msg(LOG_LEVEL_FATAL, "[decoder] Unknown video mode!\n");
+            handle_error(1);
+        }
+        // We need skip this frame (variables are illegal in this iteration
+        // and in case that we got unrecognized number of substreams - exit
+        ret = false;
+        goto cleanup;
+    }
+
+    // Allocate memory if we're looking at an LDGM frame, or wait for the frame buffer swap to occur
+    if ((packetType == PT_VIDEO || packetType == PT_ENCRYPT_VIDEO) && decoder->decoder_type == LINE_DECODER) {
+        // Wait for the buffer swap to occur
+        wait_for_framebuffer_swap(decoder);
+        unique_lock<mutex> lk(decoder->lock);
+        decoder->buffer_swapped = false;
+    }
+    else {
+        for(int i = 0; i < largestSubstream + 1; i++) {
+            frame->tiles[i].data = (char *) malloc(bufferLength + PADDING);
+            frame->tiles[i].data_len = bufferLength;
+        }
+    }
+
+    threadPool.Start();
+    for(UIntPair block : packetBlocks) {
+        // Use lambda to construct function to pass into thread
+        std::function<void(struct openssl_decrypt*)> job = [block, videoPackets, cryptoMode, decoder, packetType, bufferLength, frame, &fecPacketData, decrypt]
+        // Our thread pools allow per thread resources to be sent, so send encryption block
+        (struct openssl_decrypt* decryption) 
         {
-                unique_ptr <frame_msg> fec_msg (new frame_msg(decoder->control, decoder->stats));
-                fec_msg->buffer_num = std::move(buffer_num);
-                fec_msg->recv_frame = frame;
-                frame = NULL;
-                fec_msg->recv_frame->fec_params = fec_desc(fec::fec_type_from_pt(pt), k, m, c, seed);
-                fec_msg->recv_frame->ssrc = ssrc;
-                fec_msg->pckt_list = std::move(pckt_list);
-                fec_msg->received_pkts_cum = stats->received_pkts_cum;
-                fec_msg->expected_pkts_cum = stats->expected_pkts_cum;
+            // Build frame
+            buildFrame(videoPackets, block, decrypt, cryptoMode, decoder, packetType, bufferLength, frame, fecPacketData.get(), decryption);
+        };
+        threadPool.QueueJob(job);
+    }
+    // Wait for the thread pool to finish executing, and then shut down the threads
+    while(threadPool.Busy());
+    threadPool.Stop();
 
-                auto t0 = std::chrono::high_resolution_clock::now();
-                decoder->fec_queue.push(std::move(fec_msg));
-                auto t1 = std::chrono::high_resolution_clock::now();
-                double tpf = 1.0 / decoder->display_desc.fps;
-                if (std::chrono::duration_cast<std::chrono::duration<double>>(t1 - t0).count() > tpf && decoder->stats.displayed > 20) {
-                        decoder->slow_msg.print("Your computer may be too SLOW to play this !!!\n");
+    if (FRAMEBUFFER_NOT_READY(decoder) && (packetType == PT_VIDEO || packetType == PT_ENCRYPT_VIDEO)) {
+        LOG(LOG_LEVEL_INFO) << "Frame buffer not ready\n";
+        ret = false;
+        goto cleanup;
+    }
+
+    assert(ret);
+
+    for(int i = 0; i < maxSubstreams; ++i) {
+        frame_size += frame->tiles[i].data_len;
+    }
+
+    /// Zero missing parts of framebuffer - this may be useful for compressed video
+    /// (which may be also with FEC - but we use systematic codes therefore it may
+    /// benefit from that as well).
+    if (decoder->decoder_type != LINE_DECODER) {
+        for(int i = 0; i < maxSubstreams; ++i) {
+            unsigned int last_end = 0;
+
+            for (auto const & packets : fecPacketData[i]) {
+                unsigned int start = packets.first;
+                unsigned int len = packets.second;
+                if (last_end < start) {
+                    memset(frame->tiles[i].data + last_end, 0, start - last_end);
                 }
-
+                last_end = start + len;
+            }
+            if (last_end < frame->tiles[i].data_len) {
+                memset(frame->tiles[i].data + last_end, 0, frame->tiles[i].data_len - last_end);
+            }
         }
+    }
+
+    // format message
+    {
+        unique_ptr <frame_msg> fec_msg (new frame_msg(decoder->control, decoder->stats));
+        fec_msg->buffer_num = std::move(bufferNum);
+        fec_msg->recv_frame = frame;
+        frame = NULL;
+        fec_msg->recv_frame->fec_params = fec_desc(fec::fec_type_from_pt(packetType), fecData.k, fecData.m, fecData.c, fecData.seed);
+        fec_msg->recv_frame->ssrc = ssrc;
+        fec_msg->pckt_list = std::move(fecPacketData);
+        fec_msg->received_pkts_cum = stats.getReceivedPacketsTotal();
+        fec_msg->expected_pkts_cum = stats.getExpectedPacketsTotal();
+
+        auto t0 = std::chrono::high_resolution_clock::now();
+        decoder->fec_queue.push(std::move(fec_msg));
+        auto t1 = std::chrono::high_resolution_clock::now();
+        double tpf = 1.0 / decoder->display_desc.fps;
+        if (std::chrono::duration_cast<std::chrono::duration<double>>(t1 - t0).count() > tpf && decoder->stats.displayed > 20) {
+                decoder->slow_msg.print("Your computer may be too SLOW to play this !!!\n");
+        }
+
+    }
 cleanup:
-        ;
-        if(ret != TRUE) {
-                vf_free(frame);
-        }
+    ;
+    if(!ret) {
+        vf_free(frame);
+    }
 
-        pbuf_data->max_frame_size = max(pbuf_data->max_frame_size, frame_size);
-        pbuf_data->decoded++;
+    playoutBufState->max_frame_size = max(playoutBufState->max_frame_size, frame_size);
+    playoutBufState->decoded++;
 
-        decoder->stats.update(buffer_number);
+    decoder->stats.update(bufferNumber);
 
-        return ret;
+    return ret;
 }
 
 static void decoder_process_message(struct module *m)

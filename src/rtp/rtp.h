@@ -265,7 +265,7 @@ int 		 rtp_send_data(struct rtp *session,
                                char *data, int data_len, 
 			       char *extn, uint16_t extn_len, uint16_t extn_type);
 int 		 rtp_send_data_hdr(struct rtp *session, 
-			       uint32_t rtp_ts, char pt, int m, 
+			       uint32_t rtp_ts, unsigned short pt, int m,
 			       int cc, uint32_t csrc[], 
                                char *phdr, int phdr_len, 
                                char *data, int data_len,

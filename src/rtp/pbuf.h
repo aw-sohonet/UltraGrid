@@ -82,27 +82,6 @@ struct pbuf_stats {
 
 /* The playout buffer */
 struct pbuf;
-struct state_decoder;
-struct state_audio_decoder;
-
-/**
- * This struct is used to pass data between decoder and receiver.
- */
-struct vcodec_state {
-        struct state_video_decoder *decoder;
-        unsigned int max_frame_size; // maximal frame size
-                                     // to be returned to caller by a decoder to allow him adjust buffers accordingly
-        unsigned int decoded;
-};
-
-struct pbuf_audio_data {
-        audio_frame buffer;
-        struct sockaddr_storage source; // network source address
-        struct state_audio_decoder *decoder;
-
-        bool reconfigured;
-        size_t frame_size; ///< currently decoded audio frame size (used similarly as vcodec_state::max_frame_size to allow caller adjust buffers if needed)
-};
 
 /**
  * @param decode_data

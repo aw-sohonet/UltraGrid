@@ -83,11 +83,16 @@
 #include "video.h"
 #include "video_codec.h"
 #include "compat/platform_time.h"
+#include "threadpool.hpp"
+#include "utils/utility.hpp"
 
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <functional>
 #include <iostream>
+#include <utility>
+#include <string>
 #include <vector>
 
 #define MOD_NAME "[transmit] "
@@ -121,10 +126,19 @@ static void tx_done(struct module *tx);
 static uint32_t format_interl_fps_hdr_row(enum interlacing_t interlacing, double input_fps);
 
 static void
-tx_send_base(struct tx *tx, struct video_frame *frame, struct rtp *rtp_session,
+tx_send_base(struct tx *tx, struct video_frame *frame, struct rtp *rtpSession,
                 uint32_t ts, int send_m,
                 unsigned int substream,
                 int fragment_offset);
+
+static void
+tx_send_base_threaded(struct tx *tx, struct video_frame *frame, struct rtp *rtpSession,
+                      uint32_t ts, int send_m, unsigned int substream, int fragment_offset);
+
+
+void tx_send_packet(struct tx *tx, struct video_frame *frame, struct rtp *rtpSession,
+                    uint32_t timestamp, int m, char* data, int dataLen, uint32_t* rtpHeader,
+                    int rtpHeaderLen, unsigned short packetType, struct openssl_encrypt* encryption);
 
 
 static bool set_fec(struct tx *tx, const char *fec);
@@ -134,6 +148,81 @@ struct rate_limit_dyn {
         unsigned long avg_frame_size;   ///< moving average
         long long last_excess; ///< nr of frames last excessive frame was emitted
         static constexpr int EXCESS_GAP = 4; ///< minimal gap between excessive frames
+};
+
+/**
+ * A helper class for regularly reporting how long it is taking to send the packets
+ */
+class PacketTiming {
+public:
+    PacketTiming(size_t limit, MediaType mediaType) : limit(limit), mediaType(mediaType) {
+        this->values = std::queue<long long>();
+        this->total = 0;
+        this->reportTiming = std::chrono::high_resolution_clock::now();
+    };
+
+    /**
+     * @brief A wrapper function for the start recording of the packet timing.
+     */
+    void start() {
+        this->begin = std::chrono::high_resolution_clock::now();
+    }
+
+    /**
+     * @brief Measure the time that has elapsed since the start function has been called and record it as part
+     *        of a moving average.
+     */
+    void measure() {
+        std::chrono::high_resolution_clock::time_point end = std::chrono::high_resolution_clock::now();
+        long long packetTiming = std::chrono::duration_cast<std::chrono::milliseconds>(end - this->begin).count();
+
+        // If our queue has surpassed its limit, then remove an element
+        if(this->values.size() > this->limit) {
+            this->total -= this->values.front();
+            this->values.pop();
+        }
+
+        // Expand the total and the values queue by this
+        this->values.push(packetTiming);
+        this->total += packetTiming;
+    }
+
+    /**
+     * @brief Calculate the average timing for the packets.
+     */
+    double average() {
+        size_t queueSize = this->values.size();
+        if(queueSize > 0) {
+            return static_cast<double>(this->total) / static_cast<double>(queueSize);
+        }
+        else {
+            return 0.0;
+        }
+    }
+
+    /**
+     * @brief A regular report should be produced of the timings it takes to send packets
+     *        (since this has been an issue it is something we want to track).
+     *
+     * @param packetCount
+     */
+    void report(size_t packetCount) {
+        std::chrono::high_resolution_clock::time_point now = std::chrono::high_resolution_clock::now();
+        long long timeSinceReport = std::chrono::duration_cast<std::chrono::seconds>(now - this->reportTiming).count();
+
+        if(timeSinceReport > 10) {
+            LOG(LOG_LEVEL_INFO) << "[transmit] Packet processing time average for " << (this->mediaType == MediaType::MEDIA_VIDEO ? "video" : "audio") << " is: " << this->average()
+                                << "ms with " << packetCount << " packets\n";
+            this->reportTiming = now;
+        }
+    }
+private:
+    std::chrono::high_resolution_clock::time_point reportTiming;
+    std::chrono::high_resolution_clock::time_point begin;
+    std::queue<long long> values;
+    size_t limit;
+    long long total;
+    MediaType mediaType;
 };
 
 struct tx {
@@ -163,11 +252,38 @@ struct tx {
 
         const struct openssl_encrypt_info *enc_funcs;
         struct openssl_encrypt *encryption;
+        openssl_mode encryption_mode;
+        std::vector<struct openssl_encrypt*> encryption_resources;
+        unsigned int thread_count;
+        PacketTiming videoTiming;
+        PacketTiming audioTiming;
+        
         long long int bitrate;
         struct rate_limit_dyn dyn_rate_limit_state;
 		
         char tmp_packet[RTP_MAX_MTU];
 };
+
+struct PacketInfo {
+    // The offset of the data to send from the original block
+    size_t fragmentOffset;
+    // The size of the payload header (used for encryption)
+    size_t payloadHeaderSize;
+    // Whether to attach and use the terminating M bit.
+    bool sendM;
+    // The timestamp to attach to the packet.
+    uint32_t timestamp;
+    // A pointer to the head of the total block of data being sent
+    char* data;
+    // The length of the total block of data being sent
+    size_t dataLen;
+    // The packet type
+    unsigned short packetType;
+};
+
+void tx_send_packets(struct tx *tx, struct rtp *rtpSession, const std::vector<int>& packetSizes, const struct PacketInfo& packetInfo,
+                     const uint32_t* rtpHeader, int rtpHeaderLen, int startingPacket, int packetAmount, struct openssl_encrypt* encryption);
+
 
 static void tx_update(struct tx *tx, struct video_frame *frame, int substream)
 {
@@ -203,6 +319,18 @@ static void tx_update(struct tx *tx, struct video_frame *frame, int substream)
                 tx->sent_frames = 0;
         }
 }
+
+ADD_TO_PARAM("encryption-mode", "* encryption-mode=<encryption mode number>\n"
+             "  The encryption mode to use matching the internal enums (useful for backwards compatibility).\n"
+             "    1. AES128-CTR\n"
+             "    2. AES128-CFB\n"
+             "    3. AES128-ECB\n"
+             "    4. AES128-CBC\n"
+             "    5. AES128-GCM (Default)\n");
+
+
+ADD_TO_PARAM("encode-thread-count", "* encode-thread-count=<Thread Count>\n"
+             "  The number of threads to use when encrypting packets.\n");
 
 struct tx *tx_init(struct module *parent, unsigned mtu, enum tx_media_type media_type,
                 const char *fec, const char *encryption, long long int bitrate)
@@ -242,6 +370,19 @@ struct tx *tx_init(struct module *parent, unsigned mtu, enum tx_media_type media
                         return NULL;
                 }
         }
+
+        // Have the thread count be configurable via a parameter. Otherwise, default to the
+        // full amount of available threads.
+        tx->thread_count = ThreadPool<int>::ThreadCount();
+        const char* encodeThreadCount = get_commandline_param("encode-thread-count");
+        if(encodeThreadCount) {
+            int thread_count = std::stoi(encodeThreadCount);
+            if(thread_count > 0) {
+                tx->thread_count = static_cast<unsigned int>(thread_count);
+                LOG(LOG_LEVEL_INFO) << "The encoder thread count has been set to: " << tx->thread_count << "\n";
+            }
+        }
+
         if (encryption) {
                 tx->enc_funcs = static_cast<const struct openssl_encrypt_info *>(load_library("openssl_encrypt",
                                         LIBRARY_CLASS_UNDEFINED, OPENSSL_ENCRYPT_ABI_VERSION));
@@ -250,17 +391,55 @@ struct tx *tx_init(struct module *parent, unsigned mtu, enum tx_media_type media
                         module_done(&tx->mod);
                         return NULL;
                 }
-                if (tx->enc_funcs->init(&tx->encryption,
-                                        encryption, DEFAULT_CIPHER_MODE) != 0) {
+
+                tx->encryption_mode = DEFAULT_CIPHER_MODE;
+                const char* modeRawParam = get_commandline_param("encryption-mode");
+                if(modeRawParam) {
+                    auto modeParam = std::string(modeRawParam);
+                    try {
+                        tx->encryption_mode = static_cast<openssl_mode>(std::stoi(modeParam));
+                    }
+                    catch(std::exception& ex) {
+                        LOG(LOG_LEVEL_ERROR) << "Unable to initialise correct encryption mode: " << modeRawParam << " is not a recognised mode\n";
+                        module_done(&tx->mod);
+                        return NULL;
+                    }
+                }
+
+                if (tx->enc_funcs->init(&tx->encryption, encryption, tx->encryption_mode) != 0) {
+                    log_msg(LOG_LEVEL_ERROR, MOD_NAME "Unable to initialize encryption\n");
+                    module_done(&tx->mod);
+                    return NULL;
+                }
+                log_msg(LOG_LEVEL_INFO, MOD_NAME "Encryption set to mode %d\n", (int) tx->encryption_mode);
+                
+                // Create an encryption structure per available thread.
+                for(unsigned int i = 0; i < tx->thread_count; i++) {
+                    // Hand in a pointer from the stack, this can then be copied into a vector
+                    struct openssl_encrypt* encryption_resource = nullptr;
+                    if (tx->enc_funcs->init(&encryption_resource, encryption, tx->encryption_mode) != 0) {
                         log_msg(LOG_LEVEL_ERROR, MOD_NAME "Unable to initialize encryption\n");
                         module_done(&tx->mod);
                         return NULL;
+                    }
+                    // Copy the pointer into the vector
+                    tx->encryption_resources.push_back(encryption_resource);
                 }
+        }
+        else {
+            // If there is no encryption then just handover nullptr's for the encryption resource
+            unsigned int threadCount = ThreadPool<int>::ThreadCount();
+            for(unsigned int i = 0; i < threadCount; i++) {
+                tx->encryption_resources.push_back(nullptr);
+            }
         }
 
         tx->bitrate = bitrate;
 
         tx->control = (struct control_state *) get_module(get_root_module(parent), "control");
+
+        tx->audioTiming = PacketTiming(200, MediaType::MEDIA_AUDIO);
+        tx->videoTiming = PacketTiming(200, MediaType::MEDIA_VIDEO);
 
         return tx;
 }
@@ -374,6 +553,20 @@ static void tx_done(struct module *mod)
 {
         struct tx *tx = (struct tx *) mod->priv_data;
         assert(tx->magic == TRANSMIT_MAGIC);
+
+        // If the encryption is set then destroy it
+        if(tx->encryption) {
+            tx->enc_funcs->destroy(tx->encryption);
+        }
+        // If the items in the encryption resources are set then free them
+        if(!tx->encryption_resources.empty()) {
+            for(auto encryption_resource : tx->encryption_resources) {
+                if(encryption_resource) {
+                    tx->enc_funcs->destroy(encryption_resource);
+                }
+            }
+        }
+
         free(tx);
 }
 
@@ -417,16 +610,32 @@ tx_send(struct tx *tx, struct video_frame *frame, struct rtp *rtp_session)
         tx->buffer++;
 }
 
+/**
+ * Format the video header into 6 32-bit words
+ *
+ * [ 10 bits for tile index ][      22 bits for buffer index       ]
+ * [                    32 bits for data position                  ]
+ * [               32 bits for overall tile data length            ]
+ * [    16 bits for tile width    ][    16 bits for tile height    ]
+ * [              32 bits for frame colour specification           ]
+ * [                  32 bits for interlaced FPS row               ]
+ *
+ *
+ * @param frame       The video frame being sent
+ * @param tile_idx    The index of the tile being sent from within the video frame
+ * @param buffer_idx  The buffer index
+ * @param video_hdr   A pointer to the video header being written into
+ */
 void format_video_header(struct video_frame *frame, int tile_idx, int buffer_idx, uint32_t *video_hdr)
 {
         uint32_t tmp;
 
-        video_hdr[3] = htonl(frame->tiles[tile_idx].width << 16 | frame->tiles[tile_idx].height);
-        video_hdr[4] = get_fourcc(frame->color_spec);
-        video_hdr[2] = htonl(frame->tiles[tile_idx].data_len);
         tmp = tile_idx << 22;
         tmp |= 0x3fffff & buffer_idx;
         video_hdr[0] = htonl(tmp);
+        video_hdr[2] = htonl(frame->tiles[tile_idx].data_len);
+        video_hdr[3] = htonl(frame->tiles[tile_idx].width << 16 | frame->tiles[tile_idx].height);
+        video_hdr[4] = get_fourcc(frame->color_spec);
 
         /* word 6 */
         video_hdr[5] = format_interl_fps_hdr_row(frame->interlacing, frame->fps);
@@ -614,24 +823,214 @@ get_packet_rate(struct tx *tx, struct video_frame *frame, int substream, long pa
         return packet_rate;
 }
 
-static void
-tx_send_base(struct tx *tx, struct video_frame *frame, struct rtp *rtp_session,
-                uint32_t ts, int send_m,
-                unsigned int substream,
-                int fragment_offset)
+// static void tx_send_base(struct tx *tx, struct video_frame *frame, struct rtp *rtpSession,
+//                          uint32_t ts, int send_m, unsigned int substream, int fragment_offset)
+// {
+//         if (!rtp_has_receiver(rtpSession)) {
+//                 return;
+//         }
+//
+//         // See definition in rtp_callback.h
+//         uint32_t rtpHeader[100];
+//         int rtpHeaderLen;
+//
+//         // A value specified in our packet format
+//         unsigned short packetType = fec_pt_from_fec_type(TX_MEDIA_VIDEO,
+//                                                          frame->fec_params.type,
+//                                                          tx->encryption);
+//
+//         // Setup variables for calculating the timing for sending packets
+//         // for the traffic shaper
+// #ifdef HAVE_LINUX
+//         struct timespec start, stop;
+// #elif defined HAVE_MACOSX
+//         struct timeval start, stop;
+// #else // Windows
+// 	LARGE_INTEGER start, stop, freq;
+// #endif
+//         long delta, overslept = 0;
+//
+//         // Fetch the tile of the frame we are operating on
+//         struct tile* tile = &frame->tiles[substream];
+//         int dataLen;
+//
+//         // Set up the variables for the multiple packet FEC
+//         array <int, FEC_MAX_MULT> multPos{};
+//         int multIndex = 0;
+//
+//         // Calculate the length of the header in bytes
+//         int headersLen = (rtp_is_ipv6(rtpSession) ? 40 : 20) + 8 + 12; // IP hdr size + UDP hdr size + RTP hdr size
+//
+//         assert(tx->magic == TRANSMIT_MAGIC);
+//
+//         // Update the transmission statistics
+//         tx_update(tx, frame, substream);
+//
+//         // Set up the headers for the out-going packets
+//         if (frame->fec_params.type == FEC_NONE) {
+//             // Expand the length of the headers by the size of a video payload header
+//             headersLen += (sizeof(video_payload_hdr_t));
+//             rtpHeaderLen = sizeof(video_payload_hdr_t);
+//             // Create the video header - see func docs for header format
+//             format_video_header(frame, substream, tx->buffer, rtpHeader);
+//         } else {
+//             // Expand the length of the headers by the size of a FEC payload header
+//             headersLen += (sizeof(fec_payload_hdr_t));
+//             rtpHeaderLen = sizeof(fec_payload_hdr_t);
+//             // Setup the substream as a bit shifted 10 bit number
+//             uint32_t tmp = substream << 22;
+//             // Overlay the buffer into the other 22 available bits.
+//             tmp |= 0x3fffff & tx->buffer;
+//             rtpHeader[0] = htonl(tmp);
+//             // Set the overall length of the tile data in the second section
+//             rtpHeader[2] = htonl(tile->data_len);
+//             // Set up the K parameter as a 13-bit number (bit-shifted)
+//             // Set up the M parameter as a 13-bit number (bit-shifted)
+//             // Overlay the C parameter (Max as a 6-bit value)
+//             rtpHeader[3] = htonl(
+//                              frame->fec_params.k << 19 |
+//                              frame->fec_params.m << 6 |
+//                              frame->fec_params.c);
+//             // Insert the FEC seed
+//             rtpHeader[4] = htonl(frame->fec_params.seed);
+//         }
+//
+//         // If encryption is enabled expand the headers
+//         if (tx->encryption) {
+//             // Add the size of the crypto header and encryption overhead
+//             headersLen += sizeof(crypto_payload_hdr_t) + tx->enc_funcs->get_overhead(tx->encryption);
+//             // Add the default cipher mode to the first section of the crypto header (8-bit number)
+//             rtpHeader[rtpHeaderLen / sizeof(uint32_t)] = htonl(DEFAULT_CIPHER_MODE << 24);
+//             // Expand the size of the rtpHeader by the crypto header as well
+//             rtpHeaderLen += sizeof(crypto_payload_hdr_t);
+//         }
+//
+//         // Calculate the size of all of the out-going packets. This varies based off of MTU, and FEC settings.
+//         // (Try and ensure FEC settings don't exceed the size of the MTU otherwise we'll get fragmented packets.
+//         vector<int> packetSizes = get_packet_sizes(frame, substream, tx->mtu - headersLen);
+//
+//         // Calculate the amount of packets being sent. (Amount of packets * Multiplication FEC)
+//         long packetCount = packetSizes.size() * (tx->fec_scheme == FEC_MULT ? tx->mult_count : 1);
+//
+//         // Calculate the rate at which we should be sending out packets
+//         long packetRate = get_packet_rate(tx, frame, substream, packetCount);
+//
+//         // Create a header per packet
+//         void *rtpHeaders = malloc(packetCount * rtpHeaderLen);
+//         // Create a pointer for keeping track of the copy location for the header
+//         auto rtpHeaderPacket = (uint32_t *) rtpHeaders;
+//         // Look through the packets and duplicate the header into the RTP headers array
+//         for (int i = 0; i < packetCount; ++i) {
+//             memcpy(rtpHeaderPacket, rtpHeader, rtpHeaderLen);
+//             rtpHeaderPacket += rtpHeaderLen / sizeof(uint32_t);
+//         }
+//         // Reset the pointer for keeping track of the header location to be the head
+//         // of the array
+//         rtpHeaderPacket = (uint32_t *) rtpHeaders;
+//
+//         if (!tx->encryption) {
+//                 rtp_async_start(rtpSession, packetCount);
+//         }
+//
+//         int packet_idx = 0;
+//         unsigned pos = 0;
+//         do {
+//                 GET_STARTTIME;
+//                 int m = 0;
+//                 if(tx->fec_scheme == FEC_MULT) {
+//                         pos = multPos[multIndex];
+//                 }
+//
+//                 int offset = pos + fragment_offset;
+//
+//             rtpHeaderPacket[1] = htonl(offset);
+//
+//                 char *data = tile->data + pos;
+//             dataLen = packetSizes.at(packet_idx);
+//                 if (pos + dataLen >= (unsigned int) tile->data_len) {
+//                         if (send_m) {
+//                                 m = 1;
+//                         }
+//                     dataLen = tile->data_len - pos;
+//                 }
+//                 pos += dataLen;
+//                 if(dataLen) { /* check needed for FEC_MULT */
+//                         char encrypted_data[dataLen + MAX_CRYPTO_EXCEED];
+//
+//                         if (tx->encryption) {
+//                             dataLen = tx->enc_funcs->encrypt(tx->encryption,
+//                                                              data, dataLen,
+//                                                              (char *) rtpHeaderPacket,
+//                                                 frame->fec_params.type != FEC_NONE ? sizeof(fec_payload_hdr_t) :
+//                                                 sizeof(video_payload_hdr_t),
+//                                                              encrypted_data);
+//                                 data = encrypted_data;
+//                         }
+//
+//                         if (control_stats_enabled(tx->control)) {
+//                                 auto current_time_ms = time_since_epoch_in_ms();
+//                                 if(current_time_ms - tx->last_stat_report >= CONTROL_PORT_BANDWIDTH_REPORT_INTERVAL_MS){
+//                                         std::ostringstream oss;
+//                                         oss << "tx_send " << std::hex << rtp_my_ssrc(rtpSession) << std::dec << " video " << tx->sent_since_report;
+//                                         control_report_stats(tx->control, oss.str());
+//                                         tx->last_stat_report = current_time_ms;
+//                                         tx->sent_since_report = 0;
+//                                 }
+//                                 tx->sent_since_report += dataLen + rtpHeaderLen;
+//                         }
+//
+//                         rtp_send_data_hdr(rtpSession, ts, packetType, m, 0, 0,
+//                                           (char *) rtpHeaderPacket, rtpHeaderLen,
+//                                           data, dataLen, 0, 0, 0);
+//                 }
+//
+//                 if (multIndex + 1 == tx->mult_count) {
+//                         ++packet_idx;
+//                 }
+//
+//                 if(tx->fec_scheme == FEC_MULT) {
+//                     multPos[multIndex] = pos;
+//                     multIndex = (multIndex + 1) % tx->mult_count;
+//                 }
+//
+//             rtpHeaderPacket += rtpHeaderLen / sizeof(uint32_t);
+//
+//                 // TRAFFIC SHAPER
+//                 if (pos < (unsigned int) tile->data_len) { // wait for all but last packet
+//                         do {
+//                                 GET_STOPTIME;
+//                                 GET_DELTA;
+//                         } while (packetRate - delta - overslept > 0);
+//                         overslept = -(packetRate - delta - overslept);
+//                         //fprintf(stdout, "%ld ", overslept);
+//                 }
+//         } while (pos < tile->data_len || multIndex != 0); // when multiplying, we need all streams go to the end
+//
+//         if (!tx->encryption) {
+//                 rtp_async_wait(rtpSession);
+//         }
+//         free(rtpHeaders);
+// }
+
+
+static void tx_send_base(struct tx *tx, struct video_frame *frame, struct rtp *rtpSession,
+                                  uint32_t ts, int send_m, unsigned int substream, int fragment_offset)
 {
-        if (!rtp_has_receiver(rtp_session)) {
+        if (!rtp_has_receiver(rtpSession)) {
                 return;
         }
 
-        struct tile *tile = &frame->tiles[substream];
+        // See definition in rtp_callback.h
+        uint32_t rtpHeader[100];
+        int rtpHeaderSize;
 
-        int data_len;
-        // see definition in rtp_callback.h
+        // A value specified in our packet format
+        unsigned short packetType = fec_pt_from_fec_type(TX_MEDIA_VIDEO,
+                                                         frame->fec_params.type,
+                                                         tx->encryption);
 
-        uint32_t rtp_hdr[100];
-        int rtp_hdr_len;
-        int pt = fec_pt_from_fec_type(TX_MEDIA_VIDEO, frame->fec_params.type, tx->encryption);            /* A value specified in our packet format */
+        // Setup variables for calculating the timing for sending packets
+        // for the traffic shaper
 #ifdef HAVE_LINUX
         struct timespec start, stop;
 #elif defined HAVE_MACOSX
@@ -640,137 +1039,308 @@ tx_send_base(struct tx *tx, struct video_frame *frame, struct rtp *rtp_session,
 	LARGE_INTEGER start, stop, freq;
 #endif
         long delta, overslept = 0;
-        array <int, FEC_MAX_MULT> mult_pos{};
-        int mult_index = 0;
 
-        int hdrs_len = (rtp_is_ipv6(rtp_session) ? 40 : 20) + 8 + 12; // IP hdr size + UDP hdr size + RTP hdr size
+        // Fetch the tile of the frame we are operating on
+        struct tile* tile = &frame->tiles[substream];
+        int dataLen;
+
+        // Set up the variables for the multiple packet FEC
+        array <int, FEC_MAX_MULT> multPos{};
+        int multIndex = 0;
+
+        // Calculate the length of the header in bytes
+        int headersLen = (rtp_is_ipv6(rtpSession) ? 40 : 20) + 8 + 12; // IP hdr size + UDP hdr size + RTP hdr size
 
         assert(tx->magic == TRANSMIT_MAGIC);
 
+        // Update the transmission statistics
         tx_update(tx, frame, substream);
 
+        // Set up the headers for the out-going packets
         if (frame->fec_params.type == FEC_NONE) {
-                hdrs_len += (sizeof(video_payload_hdr_t));
-                rtp_hdr_len = sizeof(video_payload_hdr_t);
-                format_video_header(frame, substream, tx->buffer, rtp_hdr);
+            // Expand the length of the headers by the size of a video payload header
+            headersLen += (sizeof(video_payload_hdr_t));
+            rtpHeaderSize = sizeof(video_payload_hdr_t);
+            // Create the video header - see func docs for header format
+            format_video_header(frame, substream, tx->buffer, rtpHeader);
         } else {
-                hdrs_len += (sizeof(fec_payload_hdr_t));
-                rtp_hdr_len = sizeof(fec_payload_hdr_t);
-                uint32_t tmp = substream << 22;
-                tmp |= 0x3fffff & tx->buffer;
-                // see definition in rtp_callback.h
-                rtp_hdr[0] = htonl(tmp);
-                rtp_hdr[2] = htonl(tile->data_len);
-                rtp_hdr[3] = htonl(
+            // Expand the length of the headers by the size of a FEC payload header
+            headersLen += (sizeof(fec_payload_hdr_t));
+            rtpHeaderSize = sizeof(fec_payload_hdr_t);
+            // Setup the substream as a bit shifted 10 bit number
+            uint32_t tmp = substream << 22;
+            // Overlay the buffer into the other 22 available bits.
+            tmp |= 0x3fffff & tx->buffer;
+            rtpHeader[0] = htonl(tmp);
+            // Set the overall length of the tile data in the second section
+            rtpHeader[2] = htonl(tile->data_len);
+            // Set up the K parameter as a 13-bit number (bit-shifted)
+            // Set up the M parameter as a 13-bit number (bit-shifted)
+            // Overlay the C parameter (Max as a 6-bit value)
+            rtpHeader[3] = htonl(
                              frame->fec_params.k << 19 |
                              frame->fec_params.m << 6 |
                              frame->fec_params.c);
-                rtp_hdr[4] = htonl(frame->fec_params.seed);
+            // Insert the FEC seed
+            rtpHeader[4] = htonl(frame->fec_params.seed);
         }
 
+        // If encryption is enabled expand the headers
         if (tx->encryption) {
-                hdrs_len += sizeof(crypto_payload_hdr_t) + tx->enc_funcs->get_overhead(tx->encryption);
-                rtp_hdr[rtp_hdr_len / sizeof(uint32_t)] = htonl(DEFAULT_CIPHER_MODE << 24);
-                rtp_hdr_len += sizeof(crypto_payload_hdr_t);
+            // Add the size of the crypto header and encryption overhead
+            headersLen += sizeof(crypto_payload_hdr_t) + tx->enc_funcs->get_overhead(tx->encryption);
+            // Add the default cipher mode to the first section of the crypto header (8-bit number)
+            rtpHeader[rtpHeaderSize / sizeof(uint32_t)] = htonl(tx->encryption_mode << 24);
+            // Expand the size of the rtpHeader by the crypto header as well
+            rtpHeaderSize += sizeof(crypto_payload_hdr_t);
         }
 
-        vector<int> packet_sizes = get_packet_sizes(frame, substream, tx->mtu - hdrs_len);
-        long packet_count = packet_sizes.size() * (tx->fec_scheme == FEC_MULT ? tx->mult_count : 1);
+        // Calculate the size of all of the out-going packets. This varies based off of MTU, and FEC settings.
+        // (Try and ensure FEC settings don't exceed the size of the MTU otherwise we'll get fragmented packets)
+        vector<int> packetSizes = get_packet_sizes(frame, substream, tx->mtu - headersLen);
+        // Calculate the amount of packets being sent. (Amount of packets * Multiplication FEC)
+        long packetCount = packetSizes.size();
 
-        long packet_rate = get_packet_rate(tx, frame, substream, packet_count);
-
-        // initialize header array with values (except offset which is different among
-        // different packts)
-        void *rtp_headers = malloc(packet_count * rtp_hdr_len);
-        uint32_t *rtp_hdr_packet = (uint32_t *) rtp_headers;
-        for (int i = 0; i < packet_count; ++i) {
-                memcpy(rtp_hdr_packet, rtp_hdr, rtp_hdr_len);
-                rtp_hdr_packet += rtp_hdr_len / sizeof(uint32_t);
-        }
-        rtp_hdr_packet = (uint32_t *) rtp_headers;
+        // Calculate the rate at which we should be sending out packets
+        long packetRate = get_packet_rate(tx, frame, substream, packetCount);
 
         if (!tx->encryption) {
-                rtp_async_start(rtp_session, packet_count);
+                rtp_async_start(rtpSession, packetCount);
         }
 
-        int packet_idx = 0;
-        unsigned pos = 0;
-        do {
-                GET_STARTTIME;
-                int m = 0;
-                if(tx->fec_scheme == FEC_MULT) {
-                        pos = mult_pos[mult_index];
-                }
+        // Create the threadpool and initialise the workers.
+        ThreadPool<struct openssl_encrypt*> threadPool = ThreadPool<struct openssl_encrypt*>(tx->encryption_resources, tx->thread_count);
+        unsigned int threadCount = tx->thread_count;
+        threadPool.Start();
 
-                int offset = pos + fragment_offset;
+        // Create a list of bound functions to ensure they are executed last
+        std::vector<std::function<void(struct openssl_encrypt*)>> finalPackets = std::vector<std::function<void(struct openssl_encrypt*)>>();
 
-                rtp_hdr_packet[1] = htonl(offset);
+        // There is a lot of information required to send a packet. Wrap this into a structure to be passed for our blocks to share.
+        struct PacketInfo packetInfo;
+        packetInfo.data = (char*) tile->data;
+        packetInfo.dataLen = tile->data_len;
+        packetInfo.timestamp = ts;
+        packetInfo.fragmentOffset = fragment_offset;
+        packetInfo.packetType = packetType;
+        packetInfo.payloadHeaderSize = frame->fec_params.type != FEC_NONE ? sizeof(fec_payload_hdr_t) : sizeof(video_payload_hdr_t);
+        packetInfo.sendM = send_m;
 
-                char *data = tile->data + pos;
-                data_len = packet_sizes.at(packet_idx);
-                if (pos + data_len >= (unsigned int) tile->data_len) {
-                        if (send_m) {
-                                m = 1;
-                        }
-                        data_len = tile->data_len - pos;
-                }
-                pos += data_len;
-                if(data_len) { /* check needed for FEC_MULT */
-                        char encrypted_data[data_len + MAX_CRYPTO_EXCEED];
+        // Start the timer for recording the time it takes to send all of the packets.
+        tx->videoTiming.start();
 
-                        if (tx->encryption) {
-                                data_len = tx->enc_funcs->encrypt(tx->encryption,
-                                                data, data_len,
-                                                (char *) rtp_hdr_packet,
-                                                frame->fec_params.type != FEC_NONE ? sizeof(fec_payload_hdr_t) :
-                                                sizeof(video_payload_hdr_t),
-                                                encrypted_data);
-                                data = encrypted_data;
-                        }
+        // Calculate all blocks for every packet except the last one (because that needs to be sent last)
+        const int blockPackets = packetCount - 1;
+        // Calculate the maximum block of packets we should send per thread.
+        const int maxBlockSize = ceil((double)blockPackets / (double)threadCount);
+        // Start from the beginning of the packet listing
+        int blockBegin = 0;
+        for(int i = 0; i < threadCount; i++) {
+            // Set the block size to be the max, or the remaining amount of packets to send.
+            int blockSize = maxBlockSize;
+            if(blockBegin + blockSize > blockPackets) {
+                blockSize = blockPackets - blockBegin;
+            }
 
-                        if (control_stats_enabled(tx->control)) {
-                                auto current_time_ms = time_since_epoch_in_ms();
-                                if(current_time_ms - tx->last_stat_report >= CONTROL_PORT_BANDWIDTH_REPORT_INTERVAL_MS){
-                                        std::ostringstream oss;
-                                        oss << "tx_send " << std::hex << rtp_my_ssrc(rtp_session) << std::dec << " video " << tx->sent_since_report;
-                                        control_report_stats(tx->control, oss.str());
-                                        tx->last_stat_report = current_time_ms;
-                                        tx->sent_since_report = 0;
-                                }
-                                tx->sent_since_report += data_len + rtp_hdr_len;
-                        }
+            // Use lambda to construct function to pass into thread
+            std::function<void(struct openssl_encrypt*)> job = [tx, rtpSession, packetSizes, packetInfo,
+                                                                rtpHeader, rtpHeaderSize, blockBegin, blockSize,
+                                                                finalPackets]
+            // Our thread pools allow per thread resources to be sent, so send encryption block
+            (struct openssl_encrypt* encryption)
+            {
+                tx_send_packets(tx, rtpSession, packetSizes, packetInfo, rtpHeader, rtpHeaderSize / sizeof(uint32_t), blockBegin, blockSize, encryption);
+            };
+            threadPool.QueueJob(job);
 
-                        rtp_send_data_hdr(rtp_session, ts, pt, m, 0, 0,
-                                  (char *) rtp_hdr_packet, rtp_hdr_len,
-                                  data, data_len, 0, 0, 0);
-                }
+            // Increment the beginning of the next block by the size we are sending
+            blockBegin += blockSize;
+        }
 
-                if (mult_index + 1 == tx->mult_count) {
-                        ++packet_idx;
-                }
+        // Update statistics for the control stats
+        if (control_stats_enabled(tx->control)) {
+            // Collect the time, and calculate if the correct period of time since the last
+            // report has happened
+            auto current_time_ms = time_since_epoch_in_ms();
+            if(current_time_ms - tx->last_stat_report >= CONTROL_PORT_BANDWIDTH_REPORT_INTERVAL_MS){
+                // Generate the report and send it to the control stats
+                std::ostringstream oss;
+                oss << "tx_send " << std::hex << rtp_my_ssrc(rtpSession) << std::dec << " video " << tx->sent_since_report;
+                control_report_stats(tx->control, oss.str());
 
-                if(tx->fec_scheme == FEC_MULT) {
-                        mult_pos[mult_index] = pos;
-                        mult_index = (mult_index + 1) % tx->mult_count;
-                }
+                // Reset the timing for the report to be now
+                tx->last_stat_report = current_time_ms;
+                tx->sent_since_report = 0;
+            }
+            // Update the amount of data thats been sent since the last report
+            tx->sent_since_report += dataLen + rtpHeaderSize;
+        }
 
-                rtp_hdr_packet += rtp_hdr_len / sizeof(uint32_t);
+        // Wait for the threads to finish taking jobs off of the queue
+        while(threadPool.Busy());
+        // Join all remaining working threads as this ensures all packets are sent
+        threadPool.Stop();
 
-                // TRAFFIC SHAPER
-                if (pos < (unsigned int) tile->data_len) { // wait for all but last packet
-                        do {
-                                GET_STOPTIME;
-                                GET_DELTA;
-                        } while (packet_rate - delta - overslept > 0);
-                        overslept = -(packet_rate - delta - overslept);
-                        //fprintf(stdout, "%ld ", overslept);
-                }
-        } while (pos < tile->data_len || mult_index != 0); // when multiplying, we need all streams go to the end
+        // Send the last packet
+        tx_send_packets(tx, rtpSession, packetSizes, packetInfo, rtpHeader, rtpHeaderSize / sizeof(uint32_t), packetCount - 1, 1, threadPool.threadResources.at(0));
+
+        // Measure the time it has taken to send the video packets, and then, if enough time has passed,
+        // report on it.
+        tx->videoTiming.measure();
+        tx->videoTiming.report(packetCount);
 
         if (!tx->encryption) {
-                rtp_async_wait(rtp_session);
+                rtp_async_wait(rtpSession);
         }
-        free(rtp_headers);
+}
+
+void tx_send_packet(struct tx *tx, struct video_frame *frame, struct rtp *rtpSession,
+                    uint32_t timestamp, int m, char* data, int dataLen, uint32_t* rtpHeader,
+                    int rtpHeaderLen, unsigned short packetType, struct openssl_encrypt* encryption) {
+    // Set up timers to measure for the traffic shaping
+#ifdef HAVE_LINUX
+    struct timespec start, stop;
+#elif defined HAVE_MACOSX
+    struct timeval start, stop;
+#else // Windows
+	LARGE_INTEGER start, stop, freq;
+#endif
+    GET_STARTTIME;
+    long delta = 0;
+
+    // Check if there is data to send (needed for FEC_MULT)
+    if(dataLen) {
+        // Allocate on the stack for encrypted data
+        char encrypted_data[dataLen + MAX_CRYPTO_EXCEED];
+        if (tx->encryption) {            
+            // Encrypt the data and update our variable for the data length, and the data being sent
+            dataLen = tx->enc_funcs->encrypt(encryption,
+                                             data, dataLen,
+                                             (char *) rtpHeader,
+                                              frame->fec_params.type != FEC_NONE ? sizeof(fec_payload_hdr_t) : sizeof(video_payload_hdr_t),
+                                             encrypted_data);
+            data = encrypted_data;
+        }
+
+        // Update statistics for the control stats
+        if (control_stats_enabled(tx->control)) {
+            // Collect the time, and calculate if the correct period of time since the last
+            // report has happened
+            auto current_time_ms = time_since_epoch_in_ms();
+            if(current_time_ms - tx->last_stat_report >= CONTROL_PORT_BANDWIDTH_REPORT_INTERVAL_MS){
+                // Generate the report and send it to the control stats
+                std::ostringstream oss;
+                oss << "tx_send " << std::hex << rtp_my_ssrc(rtpSession) << std::dec << " video " << tx->sent_since_report;
+                control_report_stats(tx->control, oss.str());
+
+                // Reset the timing for the report to be now
+                tx->last_stat_report = current_time_ms;
+                tx->sent_since_report = 0;
+            }
+            // Update the amount of data thats been sent since the last report
+            tx->sent_since_report += dataLen + rtpHeaderLen;
+        }
+
+        // Send the packet
+        rtp_send_data_hdr(rtpSession, timestamp, packetType, m, 0, 0,
+                          (char *) rtpHeader, rtpHeaderLen,
+                          data, dataLen, 0, 0, 0);
+    }
+
+    // TRAFFIC SHAPER
+    // Might skip this here for now
+//    if (pos < (unsigned int) tile->dataLen) {
+//        // wait for all but last packet
+//        do {
+//            GET_STOPTIME;
+//            GET_DELTA;
+//        } while (packet_rate - delta - overslept > 0);
+//        overslept = -(packet_rate - delta - overslept);
+//        //fprintf(stdout, "%ld ", overslept);
+//    }
+}
+
+void tx_send_packets(struct tx *tx, struct rtp *rtpSession, const std::vector<int>& packetSizes, const struct PacketInfo& packetInfo,
+                     const uint32_t* rtpHeader, int rtpHeaderLen, int startingPacket, int packetAmount, struct openssl_encrypt* encryption) {
+    // Calculate the starting position this function will send packets from.
+    size_t initialPos = 0;
+    for(int i = 0; i < startingPacket; i++) {
+        initialPos += packetSizes.at(i);
+    }
+
+    // Set up the variables we will use to send the packets
+    size_t pos = initialPos;
+    int m = 0;
+    // Calculate how many duplicates should be sent
+    int multCount = tx->fec_scheme == FEC_MULT ? tx->mult_count : 1;
+
+    // Set up timers to measure for the traffic shaping
+#ifdef HAVE_LINUX
+    struct timespec start, stop;
+#elif defined HAVE_MACOSX
+    struct timeval start, stop;
+#else // Windows
+	LARGE_INTEGER start, stop, freq;
+#endif
+
+    // Loop for each packet we are sending
+    for(int packetIndex = startingPacket; packetIndex < startingPacket + packetAmount; packetIndex++) {
+        GET_STARTTIME;
+        long delta = 0;
+
+        // Create a unique header block for the packet and copy the rtp header block
+        std::unique_ptr<uint32_t[]> rtpHeaderPacket = std::make_unique<uint32_t[]>(rtpHeaderLen);
+        std::copy(rtpHeader, rtpHeader + rtpHeaderLen, rtpHeaderPacket.get());
+
+        // Calculate and add to the rtpHeaderPacket the offset of this data
+        // from the original pointer.
+        size_t dataOffset = pos + packetInfo.fragmentOffset;
+        rtpHeaderPacket[1] = htonl(dataOffset);
+
+        // Create a pointer to the data that marks the head of the data we
+        // are sending in the packet. Get the size of the packet from the
+        // packet sizes array.
+        char *data = packetInfo.data + pos;
+        size_t dataLen = packetSizes.at(packetIndex);
+        // Take a copy of the data length because encryption can change the length of the data
+        size_t originalDataLen = dataLen;
+
+        // If the data we are sending is the last block, then adjust the length
+        // of the data we're sending to match what is available, and set the M
+        // bit to be 1 marking it as the final packet of the frame.
+        if (pos + dataLen >= packetInfo.dataLen) {
+                dataLen = packetInfo.dataLen - pos;
+                if (packetInfo.sendM) {
+                        m = 1;
+                }
+        }
+
+        // Check there is some data to send
+        if(dataLen) {
+            // Allocate on the stack for encrypted data
+            char encrypted_data[dataLen + MAX_CRYPTO_EXCEED];
+            if (tx->encryption) {            
+                // Encrypt the data and update our variable for the data length, and the data being sent
+                dataLen = tx->enc_funcs->encrypt(encryption,
+                                                 data, dataLen,
+                                                 (char *) rtpHeaderPacket.get(),
+                                                 packetInfo.payloadHeaderSize,
+                                                 encrypted_data);
+                data = encrypted_data;
+            }
+
+            // Send the packets the multiplicative amount, if FEC Mult is being used
+            for(int i = 0; i < multCount; i++) {
+                // Send the packet
+                rtp_send_data_hdr(rtpSession, packetInfo.timestamp, packetInfo.packetType, m, 0, 0,
+                                  (char *) rtpHeaderPacket.get(), rtpHeaderLen * sizeof(uint32_t),
+                                  data, dataLen, 0, 0, 0);
+            }
+        }
+
+        // Push forward the position by the amount of data we just sent
+        pos += originalDataLen;
+    }
 }
 
 /* 
@@ -802,6 +1372,10 @@ void audio_tx_send(struct tx* tx, struct rtp *rtp_session, const audio_frame2 * 
         fec_check_messages(tx);
 
         timestamp = get_local_mediatime();
+
+        // Start the recording of the amount of time it takes to send the audio channels
+        tx->audioTiming.start();
+        size_t packetCount = 0;
 
         for (int channel = 0; channel < buffer->get_channel_count(); ++channel)
         {
@@ -952,6 +1526,8 @@ void audio_tx_send(struct tx* tx, struct rtp *rtp_session, const audio_frame2 * 
                                       (char *) rtp_hdr, rtp_hdr_len,
                                       const_cast<char *>(data), data_len,
                                       0, 0, 0);
+                                // Increment the sent packets
+                                packetCount++;
 
                                 // If the expectation is that this is being used in a lossy network it is important
                                 // that this packet arrive, so send it twice.
@@ -988,6 +1564,11 @@ void audio_tx_send(struct tx* tx, struct rtp *rtp_session, const audio_frame2 * 
                       
                 } while (pos < buffer->get_data_len(channel));
         }
+
+        // Measure the time it has taken to send the audio packets, and then, if enough time has passed,
+        // report on it.
+        tx->audioTiming.measure();
+        tx->audioTiming.report(packetCount);
 
         tx->buffer++;
 }
@@ -1052,13 +1633,16 @@ void audio_tx_send_channel_segments(struct tx* tx, struct rtp *rtp_session, cons
 
     check_symbol_size(fec_symbol_size, tx->mtu - hdrs_len);
 
-    int packet_rate;
+    int packet_rate = 0;
+    // This has been temporarily removed elsewhere, so it needs to happen here as well
+#if 0
     if (tx->bitrate > 0 || tx->bitrate == RATE_UNLIMITED || tx->bitrate == RATE_AUTO) {
         packet_rate = 0;
     }
     else {
         abort();
     }
+#endif
 
     do {
         int data_len = 0;
@@ -1148,6 +1732,9 @@ void audio_fec_tx_send(struct tx* tx, struct rtp *rtp_session, const audio_frame
     // Calculate the remaining amount of parity segments that need to be sent (as a factor of the multiplication)
     unsigned int paritySegmentCount = (totalPackets - audioSegmentPackets) * fecMultFactor;
 
+    // Start the recording of the amount of time it takes to send the audio channels
+    tx->audioTiming.start();
+
     // Start by sending all of the segments containing the audio data
     for (int channel = 0; channel < buffer->get_channel_count(); channel++)
     {
@@ -1161,6 +1748,12 @@ void audio_fec_tx_send(struct tx* tx, struct rtp *rtp_session, const audio_frame
             audio_tx_send_channel_segments(tx, rtp_session, buffer, channel, audioSegmentCount + i, fecMultFactor, pt, timestamp);
         }
     }
+
+    // Measure the time it has taken to send the video packets, and then, if enough time has passed,
+    // report on it.
+    tx->audioTiming.measure();
+    tx->audioTiming.report(static_cast<size_t>(totalPackets));
+
     tx->buffer++;
 }
 

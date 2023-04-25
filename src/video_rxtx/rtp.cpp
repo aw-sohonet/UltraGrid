@@ -88,7 +88,7 @@ struct response *rtp_video_rxtx::process_sender_message(struct msg_sender *msg, 
                                 m_requested_receiver = msg->receiver;
                                 m_network_devices = initialize_network(m_requested_receiver.c_str(),
                                                 m_recv_port_number,
-                                                m_send_port_number, m_participants, m_force_ip_version,
+                                                m_send_port_number, m_participants.get(), m_force_ip_version,
                                                 m_requested_mcast_if, m_requested_ttl);
                                 if (!m_network_devices) {
                                         m_network_devices = old_devices;
@@ -115,7 +115,7 @@ struct response *rtp_video_rxtx::process_sender_message(struct msg_sender *msg, 
                                         m_recv_port_number = msg->rx_port;
                                 }
                                 m_network_devices = initialize_network(m_requested_receiver.c_str(), m_recv_port_number,
-                                                m_send_port_number, m_participants, m_force_ip_version,
+                                                m_send_port_number, m_participants.get(), m_force_ip_version,
                                                 m_requested_mcast_if, m_requested_ttl);
 
                                 if (!m_network_devices) {
@@ -186,7 +186,7 @@ struct response *rtp_video_rxtx::process_sender_message(struct msg_sender *msg, 
                                 auto old_devices = m_network_devices;
                                 m_network_devices = initialize_network(m_requested_receiver.c_str(),
                                                 m_recv_port_number,
-                                                m_send_port_number, m_participants, m_force_ip_version,
+                                                m_send_port_number, m_participants.get(), m_force_ip_version,
                                                 m_requested_mcast_if, m_requested_ttl);
                                 if (!m_network_devices) {
                                         m_network_devices = old_devices;
@@ -211,7 +211,7 @@ struct response *rtp_video_rxtx::process_sender_message(struct msg_sender *msg, 
 rtp_video_rxtx::rtp_video_rxtx(map<string, param_u> const &params) :
         video_rxtx(params), m_fec_state(NULL), m_start_time(params.at("start_time").ll), m_video_desc{}
 {
-        m_participants = pdb_init((volatile int *) params.at("video_delay").vptr);
+        m_participants = std::make_shared<ParticipantDB<vcodec_state>>((volatile int *) params.at("video_delay").vptr);
         m_requested_receiver = params.at("receiver").str;
         m_recv_port_number = params.at("rx_port").i;
         m_send_port_number = params.at("tx_port").i;
@@ -220,7 +220,7 @@ rtp_video_rxtx::rtp_video_rxtx(map<string, param_u> const &params) :
         m_requested_ttl = params.find("ttl") != params.end() ? params.at("ttl").i : -1;
 
         if ((m_network_devices = initialize_network(m_requested_receiver.c_str(), m_recv_port_number, m_send_port_number,
-                                        m_participants, m_force_ip_version, m_requested_mcast_if, m_requested_ttl))
+                                                    m_participants.get(), m_force_ip_version, m_requested_mcast_if, m_requested_ttl))
                         == NULL) {
                 throw ug_runtime_error("Unable to open network", EXIT_FAIL_NETWORK);
         } else {
@@ -254,10 +254,6 @@ rtp_video_rxtx::~rtp_video_rxtx()
         destroy_rtp_devices(m_network_devices);
         m_network_devices_lock.unlock();
 
-        if (m_participants != NULL) {
-                pdb_destroy(&m_participants);
-        }
-
         delete m_fec_state;
 }
 
@@ -288,8 +284,9 @@ void rtp_video_rxtx::display_buf_increase_warning(int size)
 }
 
 struct rtp **rtp_video_rxtx::initialize_network(const char *addrs, int recv_port_base,
-                int send_port_base, struct pdb *participants, int force_ip_version,
-                const char *mcast_if, int ttl)
+                                                int send_port_base, ParticipantDB<vcodec_state>* participantDb,
+                                                int force_ip_version,
+                                                const char *mcast_if, int ttl)
 {
         struct rtp **devices = NULL;
         double rtcp_bw = 5 * 1024 * 1024;       /* FIXME */
@@ -332,10 +329,16 @@ struct rtp **rtp_video_rxtx::initialize_network(const char *addrs, int recv_port
                 const bool multithreaded = false;
 #endif
 
+                // Set up the rtpCallback to be a function that takes only two parameters, but is
+                // configured for the video participant DB
+                auto rtpCallback = [](rtp* session, rtp_event* event){
+                    rtp_packet_receive_callback(session, event, CallbackType::CALLBACK_VIDEO);
+                };
+
                 devices[index] = rtp_init_if(addr, mcast_if, recv_port,
-                                send_port, ttl, rtcp_bw, FALSE,
-                                rtp_recv_callback, (uint8_t *)participants,
-                                force_ip_version, multithreaded);
+                                             send_port, ttl, rtcp_bw, FALSE,
+                                             rtpCallback, (uint8_t *)participantDb,
+                                             force_ip_version, multithreaded);
                 if (devices[index] == nullptr) {
                         int index_nest;
                         for(index_nest = 0; index_nest < index; ++index_nest) {
@@ -365,7 +368,8 @@ struct rtp **rtp_video_rxtx::initialize_network(const char *addrs, int recv_port
 
                 rtp_set_send_buf(devices[index], INITIAL_VIDEO_SEND_BUFFER_SIZE);
 
-                pdb_add(participants, rtp_my_ssrc(devices[index]));
+                // Add any participants to the following DB
+                participantDb->addParticipant(rtp_my_ssrc(devices[index]));
         }
         if(devices != NULL) devices[index] = NULL;
         free(tmp);

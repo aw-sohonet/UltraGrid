@@ -58,6 +58,7 @@
 #include "pthread.h"
 #include "rtp/rtp.h"
 #include "rtp/pbuf.h"
+#include "pdb.h"
 
 #define CLIENT_NAME "UltraGrid Transport"
 #define BUFF_ELEM (1<<16)
