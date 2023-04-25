@@ -567,7 +567,7 @@ void PlayoutBufferStats::processStats(const std::unique_ptr<rtp_packet>& packet)
         ssrcHex << std::hex << packet->ssrc;
         // Put the initial message in
         output << "SSRC 0x" << ssrcHex.str() << ": ";
-        output << this->receivedPackets <<  "/" << this->expectedPackets << " packets receieved ";
+        output << this->receivedPackets <<  "/" << this->expectedPackets << " packets received ";
         output << "(" << lossString.str() << "%), " << lostPackets << " lost, max loss " << this->longestGap;
 
         // Put in a message about out of order packets
