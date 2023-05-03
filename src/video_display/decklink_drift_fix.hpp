@@ -307,6 +307,11 @@ public:
                         commandline_params["resampler"] = "soxr";
                 }
         }
+
+        void disable() {
+                m_enabled = false;
+        }
+
         /**
          * @brief Set the max hz object
          * 

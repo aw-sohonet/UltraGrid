@@ -1066,8 +1066,8 @@ static bool settings_init(struct state_decklink *s, const char *fmt,
                         }
                 } else if (strstr(ptr, "keep-settings") == ptr) {
                         s->keep_device_defaults = true;
-                } else if (strstr(ptr, "drift_fix") == ptr) {
-                        s->audio_drift_fixer.enable();
+                } else if (strstr(ptr, "no_drift_fix") == ptr) {
+                        s->audio_drift_fixer.disable();
                 } else if (strncasecmp(ptr, "maxresample=", strlen("maxresample=")) == 0) {
                         s->audio_drift_fixer.set_max_hz(parse_uint32(strchr(ptr, '=') + 1));
                 } else if (strncasecmp(ptr, "minresample=", strlen("minresample=")) == 0) {
@@ -1108,6 +1108,8 @@ static void *display_decklink_init(struct module *parent, const char *fmt, unsig
 
         auto *s = new state_decklink();
         s->audio_drift_fixer.set_root(get_root_module(parent));
+        // Enable by default, and have the settings init disable it if required.
+        s->audio_drift_fixer.enable();
 
         if (!settings_init(s, fmt, &cardId, &HDMI3DPacking, &audio_consumer_levels, &use1080psf)) {
                 delete s;

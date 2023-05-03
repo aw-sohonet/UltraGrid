@@ -375,14 +375,18 @@ audio_frame2_resampler::audio_frame2_resampler()
         }
         switch (resampler_type) {
                 case RESAMPLER_DEFAULT:
-#ifdef HAVE_SPEEXDSP
-                        m_impl = unique_ptr<audio_frame2_resampler::impl>(new speex_resampler(quality));
-#elif defined HAVE_SOXR
+#ifdef HAVE_SOXR
+                        LOG(LOG_LEVEL_INFO) << "Audio frame resampler: Using SOXR resampler (default)\n";
                         m_impl = unique_ptr<audio_frame2_resampler::impl>(new soxr_resampler());
+#elif defined HAVE_SPEEXDSP
+                        LOG(LOG_LEVEL_INFO) << "Audio frame resampler: Using Speex resampler (default)\n";
+                        m_impl = unique_ptr<audio_frame2_resampler::impl>(new speex_resampler(quality));
+
 #endif
                         break;
                 case RESAMPLER_SPEEX:
 #ifdef HAVE_SPEEXDSP
+                        LOG(LOG_LEVEL_INFO) << "Audio frame resampler: Using Speex resampler\n";
                         m_impl = unique_ptr<audio_frame2_resampler::impl>(new speex_resampler(quality));
 #else
                         throw ug_runtime_error("SpeexDSP not compiled in!");
@@ -390,6 +394,7 @@ audio_frame2_resampler::audio_frame2_resampler()
                         break;
                 case RESAMPLER_SOXR:
 #if defined HAVE_SOXR
+                        LOG(LOG_LEVEL_INFO) << "Audio frame resampler: Using SOXR resampler\n";
                         m_impl = unique_ptr<audio_frame2_resampler::impl>(new soxr_resampler());
                         break;
 #else
