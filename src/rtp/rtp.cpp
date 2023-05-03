@@ -3985,7 +3985,6 @@ static bool rijndael_decrypt(struct rtp *session, unsigned char *data,
 bool rtp_set_recv_buf(struct rtp *session, int bufsize)
 {
     return udp_set_recv_buf(session->rtp_socket, bufsize);
-    //return udp_set_recv_buf(session->rtp_socket, 100000000);
 }
 
 /**

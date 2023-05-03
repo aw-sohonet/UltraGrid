@@ -190,7 +190,7 @@ int blockEncrypt(cipherInstance *cipher, keyInstance *key,
                 iv = cipher->IV;
                 for (i = numBlocks; i > 0; i--) {
                         
-memcpy(outBuffer, input, 16);
+                        memcpy(outBuffer, input, 16);
                         for (k = 0; k < 128; k++) {
                                 rijndaelEncrypt(key->ek, key->Nr, iv, block);
                                 outBuffer[k >> 3] ^=
@@ -332,7 +332,7 @@ int blockDecrypt(cipherInstance * cipher, keyInstance * key,
                 for (i = numBlocks; i > 0; i--) {
                         memcpy(outBuffer, input, 16);
                         
-for (k = 0; k < 128; k++) {
+                        for (k = 0; k < 128; k++) {
                                 rijndaelEncrypt(key->ek, key->Nr, iv, block);
                                 for (t = 0; t < 15; t++) {
                                         iv[t] = (iv[t] << 1) | (iv[t + 1] >> 7);
