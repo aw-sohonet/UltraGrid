@@ -121,7 +121,7 @@ private:
 
     // In order to reconstruct the channel data we need an array
     // of all of the segments that we received. The segment indexes
-    // represent what the index of the segement is in the overall
+    // represent what the index of the segment is in the overall
     // buffer
     char** segments{};
     char** paritySegments{};

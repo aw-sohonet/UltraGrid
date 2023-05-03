@@ -179,11 +179,28 @@ int video_rxtx::check_sender_messages() {
         return ret;
 }
 
+ADD_TO_PARAM("video-fps-limit", "* video-fps-limit=<fps>\n"
+                                "  The FPS limit to set. Useful for settings like lossless.\n");
+
 void *video_rxtx::sender_loop() {
         set_thread_name(__func__);
         struct video_desc saved_vid_desc;
 
         memset(&saved_vid_desc, 0, sizeof(saved_vid_desc));
+
+        int dropFrames = 1;
+        int fpsLimit = 0;
+        const char* limitRawParam = get_commandline_param("video-fps-limit");
+        if(limitRawParam) {
+            auto limitParam = std::string(limitRawParam);
+            try {
+                fpsLimit = std::stoi(limitParam);
+            }
+            catch(std::exception& ex) {
+                LOG(LOG_LEVEL_ERROR) << "Unable to set FPS limit: " << limitRawParam << " is not a recognised limit\n";
+                goto exit;
+            }
+        }
 
         while(1) {
                 int ret = check_sender_messages();
@@ -198,8 +215,16 @@ void *video_rxtx::sender_loop() {
 
                 tx_frame->paused_play = ret == STREAM_PAUSED_PLAY;
 
+                if(fpsLimit > 0) {
+                    if(dropFrames % static_cast<int>(std::floor(tx_frame->fps / fpsLimit)) != 0) {
+                        dropFrames++;
+                        continue;
+                    }
+                }
+
                 send_frame(tx_frame);
                 m_frames_sent += 1;
+                dropFrames = 1;
         }
 
 exit:

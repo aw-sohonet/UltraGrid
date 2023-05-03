@@ -1,5 +1,5 @@
 /*
- * FILE:     rtp.c
+ * FILE:     rtp.cpp
  * AUTHOR:   Colin Perkins   <csp@csperkins.org>
  * MODIFIED: Orion Hodson    <o.hodson@cs.ucl.ac.uk>
  *           Markus Germeier <mager@tzi.de>
@@ -76,7 +76,12 @@
 #include "config_win32.h"
 #endif // defined HAVE_CONFIG_H
 
+#include <atomic>
+#include <cassert>
+#include <endian.h>
 #include <inttypes.h>
+#include <unistd.h>
+#include <sys/types.h>
 
 #include "memory.h"
 #include "debug.h"
@@ -153,6 +158,11 @@ typedef struct {
         uint16_t length;        /* packet length          */
 } rtcp_common;
 
+struct rtcp_sdes_t {
+        uint32_t ssrc;
+        rtcp_sdes_item item[1]; /* list of SDES */
+};
+
 typedef struct {
         rtcp_common common;
         union {
@@ -169,10 +179,7 @@ typedef struct {
                         rtcp_rr rr[1];  /* variable-length list */
                         rtcp_rx rx[1];
                 } rx;
-                struct rtcp_sdes_t {
-                        uint32_t ssrc;
-                        rtcp_sdes_item item[1]; /* list of SDES */
-                } sdes;
+                struct rtcp_sdes_t sdes;
                 struct {
                         uint32_t ssrc[1];       /* list of sources */
                         /* can't express the trailing text... */
@@ -299,7 +306,7 @@ struct rtp {
         int sdes_count_pri;
         int sdes_count_sec;
         int sdes_count_ter;
-        uint16_t rtp_seq;
+        std::atomic<uint16_t> rtp_seq;
         uint32_t rtp_pcount;
         uint32_t rtp_bcount;
         uint64_t rtp_bytes_sent;
@@ -2055,7 +2062,7 @@ static void process_rtcp_sdes(struct rtp *session, rtcp_t * packet)
                                         break;
                                 }
                                 if (rtp_set_sdes
-                                    (session, sd->ssrc, rsp->type, rsp->data,
+                                    (session, sd->ssrc, (rtcp_sdes_type) rsp->type, rsp->data,
                                      rsp->length)) {
                                         if (!filter_event(session, sd->ssrc)) {
                                                 event.ssrc = sd->ssrc;
@@ -2788,7 +2795,7 @@ int rtp_send_data(struct rtp *session, uint32_t rtp_ts, char pt, int m,
 
 int
 rtp_send_data_hdr(struct rtp *session,
-                  uint32_t rtp_ts, char pt, int m,
+                  uint32_t rtp_ts, unsigned short pt, int m,
                   int cc, uint32_t csrc[],
                   char *phdr, int phdr_len,
                   char *data, int data_len,
@@ -3779,7 +3786,7 @@ bool rtp_set_encryption_key(struct rtp *session, const char *passphrase)
         char *canonical_passphrase;
         u_char hash[16];
         MD5CTX context;
-        char *slash;
+        const char *slash;
 
         check_database(session);
         if (session->encryption_algorithm != NULL) {
@@ -3806,7 +3813,7 @@ bool rtp_set_encryption_key(struct rtp *session, const char *passphrase)
                 session->encryption_algorithm = strdup("DES");
         } else {
                 int l = slash - passphrase;
-                session->encryption_algorithm = malloc(l + 1);
+                session->encryption_algorithm = (char*) malloc(l + 1);
                 strncpy(session->encryption_algorithm, passphrase, l);
                 session->encryption_algorithm[l] = '\0';
                 passphrase = slash + 1;
@@ -3977,7 +3984,7 @@ static bool rijndael_decrypt(struct rtp *session, unsigned char *data,
  */
 bool rtp_set_recv_buf(struct rtp *session, int bufsize)
 {
-        return udp_set_recv_buf(session->rtp_socket, bufsize);
+    return udp_set_recv_buf(session->rtp_socket, bufsize);
 }
 
 /**
