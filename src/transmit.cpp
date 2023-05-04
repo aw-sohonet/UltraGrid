@@ -131,14 +131,8 @@ tx_send_base(struct tx *tx, struct video_frame *frame, struct rtp *rtpSession,
                 unsigned int substream,
                 int fragment_offset);
 
-static void
-tx_send_base_threaded(struct tx *tx, struct video_frame *frame, struct rtp *rtpSession,
-                      uint32_t ts, int send_m, unsigned int substream, int fragment_offset);
-
-
-void tx_send_packet(struct tx *tx, struct video_frame *frame, struct rtp *rtpSession,
-                    uint32_t timestamp, int m, char* data, int dataLen, uint32_t* rtpHeader,
-                    int rtpHeaderLen, unsigned short packetType, struct openssl_encrypt* encryption);
+void audio_tx_send_channel_segments(struct tx* tx, struct rtp *rtp_session, const audio_frame2 * buffer,
+                                    int channel, size_t segmentOffset, uint32_t segmentCount, int pt, uint32_t timestamp);
 
 
 static bool set_fec(struct tx *tx, const char *fec);
@@ -721,7 +715,7 @@ static inline void check_symbol_size(unsigned int fec_symbol_size, int payload_l
                 return;
         }
 
-        if (fec_symbol_size > payload_len) {
+        if (fec_symbol_size > static_cast<unsigned int>(payload_len)) {
                 LOG(LOG_LEVEL_WARNING) << "Warning: FEC symbol size exceeds payload size! "
                                 "FEC symbol size: " << fec_symbol_size << "\n";
         } else {
@@ -787,8 +781,7 @@ static vector<int> get_packet_sizes(struct video_frame *frame, int substream, in
 /**
  * Returns inter-packet interval in nanoseconds.
  */
-static long
-get_packet_rate(struct tx *tx, struct video_frame *frame, int substream, long packet_count)
+__attribute__((unused)) static long get_packet_rate(struct tx *tx, struct video_frame *frame, int substream, long packet_count)
 {
         if (tx->bitrate == RATE_UNLIMITED) {
                 return 0;
@@ -1031,24 +1024,9 @@ static void tx_send_base(struct tx *tx, struct video_frame *frame, struct rtp *r
                                                          frame->fec_params.type,
                                                          tx->encryption);
 
-        // Setup variables for calculating the timing for sending packets
-        // for the traffic shaper
-#ifdef HAVE_LINUX
-        struct timespec start, stop;
-#elif defined HAVE_MACOSX
-        struct timeval start, stop;
-#else // Windows
-	LARGE_INTEGER start, stop, freq;
-#endif
-        long delta, overslept = 0;
-
         // Fetch the tile of the frame we are operating on
         struct tile* tile = &frame->tiles[substream];
-        int dataLen;
-
-        // Set up the variables for the multiple packet FEC
-        array <int, FEC_MAX_MULT> multPos{};
-        int multIndex = 0;
+        int dataLen = 0;
 
         // Calculate the length of the header in bytes
         int headersLen = (rtp_is_ipv6(rtpSession) ? 40 : 20) + 8 + 12; // IP hdr size + UDP hdr size + RTP hdr size
@@ -1099,12 +1077,9 @@ static void tx_send_base(struct tx *tx, struct video_frame *frame, struct rtp *r
 
         // Calculate the size of all of the out-going packets. This varies based off of MTU, and FEC settings.
         // (Try and ensure FEC settings don't exceed the size of the MTU otherwise we'll get fragmented packets)
-        vector<int> packetSizes = get_packet_sizes(frame, substream, tx->mtu - headersLen);
+        vector<int> packetSizes = get_packet_sizes(frame, static_cast<int>(substream), tx->mtu - headersLen);
         // Calculate the amount of packets being sent. (Amount of packets * Multiplication FEC)
         long packetCount = packetSizes.size();
-
-        // Calculate the rate at which we should be sending out packets
-        long packetRate = get_packet_rate(tx, frame, substream, packetCount);
 
         if (!tx->encryption) {
                 rtp_async_start(rtpSession, packetCount);
@@ -1131,12 +1106,12 @@ static void tx_send_base(struct tx *tx, struct video_frame *frame, struct rtp *r
         tx->videoTiming.start();
 
         // Calculate all blocks for every packet except the last one (because that needs to be sent last)
-        const int blockPackets = packetCount - 1;
+        const int blockPackets = static_cast<int>(packetCount) - 1;
         // Calculate the maximum block of packets we should send per thread.
         const int maxBlockSize = ceil((double)blockPackets / (double)threadCount);
         // Start from the beginning of the packet listing
         int blockBegin = 0;
-        for(int i = 0; i < threadCount; i++) {
+        for(int i = 0; i < static_cast<int>(threadCount); i++) {
             // Set the block size to be the max, or the remaining amount of packets to send.
             int blockSize = maxBlockSize;
             if(blockBegin + blockSize > blockPackets) {
@@ -1150,7 +1125,7 @@ static void tx_send_base(struct tx *tx, struct video_frame *frame, struct rtp *r
             // Our thread pools allow per thread resources to be sent, so send encryption block
             (struct openssl_encrypt* encryption)
             {
-                tx_send_packets(tx, rtpSession, packetSizes, packetInfo, rtpHeader, rtpHeaderSize / sizeof(uint32_t), blockBegin, blockSize, encryption);
+                tx_send_packets(tx, rtpSession, packetSizes, packetInfo, rtpHeader, static_cast<int>(rtpHeaderSize / sizeof(uint32_t)), blockBegin, blockSize, encryption);
             };
             tx->threadPool->QueueJob(job);
 
@@ -1195,72 +1170,6 @@ static void tx_send_base(struct tx *tx, struct video_frame *frame, struct rtp *r
         }
 }
 
-void tx_send_packet(struct tx *tx, struct video_frame *frame, struct rtp *rtpSession,
-                    uint32_t timestamp, int m, char* data, int dataLen, uint32_t* rtpHeader,
-                    int rtpHeaderLen, unsigned short packetType, struct openssl_encrypt* encryption) {
-    // Set up timers to measure for the traffic shaping
-#ifdef HAVE_LINUX
-    struct timespec start, stop;
-#elif defined HAVE_MACOSX
-    struct timeval start, stop;
-#else // Windows
-	LARGE_INTEGER start, stop, freq;
-#endif
-    GET_STARTTIME;
-    long delta = 0;
-
-    // Check if there is data to send (needed for FEC_MULT)
-    if(dataLen) {
-        // Allocate on the stack for encrypted data
-        char encrypted_data[dataLen + MAX_CRYPTO_EXCEED];
-        if (tx->encryption) {            
-            // Encrypt the data and update our variable for the data length, and the data being sent
-            dataLen = tx->enc_funcs->encrypt(encryption,
-                                             data, dataLen,
-                                             (char *) rtpHeader,
-                                              frame->fec_params.type != FEC_NONE ? sizeof(fec_payload_hdr_t) : sizeof(video_payload_hdr_t),
-                                             encrypted_data);
-            data = encrypted_data;
-        }
-
-        // Update statistics for the control stats
-        if (control_stats_enabled(tx->control)) {
-            // Collect the time, and calculate if the correct period of time since the last
-            // report has happened
-            auto current_time_ms = time_since_epoch_in_ms();
-            if(current_time_ms - tx->last_stat_report >= CONTROL_PORT_BANDWIDTH_REPORT_INTERVAL_MS){
-                // Generate the report and send it to the control stats
-                std::ostringstream oss;
-                oss << "tx_send " << std::hex << rtp_my_ssrc(rtpSession) << std::dec << " video " << tx->sent_since_report;
-                control_report_stats(tx->control, oss.str());
-
-                // Reset the timing for the report to be now
-                tx->last_stat_report = current_time_ms;
-                tx->sent_since_report = 0;
-            }
-            // Update the amount of data thats been sent since the last report
-            tx->sent_since_report += dataLen + rtpHeaderLen;
-        }
-
-        // Send the packet
-        rtp_send_data_hdr(rtpSession, timestamp, packetType, m, 0, 0,
-                          (char *) rtpHeader, rtpHeaderLen,
-                          data, dataLen, 0, 0, 0);
-    }
-
-    // TRAFFIC SHAPER
-    // Might skip this here for now
-//    if (pos < (unsigned int) tile->dataLen) {
-//        // wait for all but last packet
-//        do {
-//            GET_STOPTIME;
-//            GET_DELTA;
-//        } while (packet_rate - delta - overslept > 0);
-//        overslept = -(packet_rate - delta - overslept);
-//        //fprintf(stdout, "%ld ", overslept);
-//    }
-}
-
 void tx_send_packets(struct tx *tx, struct rtp *rtpSession, const std::vector<int>& packetSizes, const struct PacketInfo& packetInfo,
                      const uint32_t* rtpHeader, int rtpHeaderLen, int startingPacket, int packetAmount, struct openssl_encrypt* encryption) {
     // Calculate the starting position this function will send packets from.
@@ -1275,20 +1184,8 @@ void tx_send_packets(struct tx *tx, struct rtp *rtpSession, const std::vector<in
     // Calculate how many duplicates should be sent
     int multCount = tx->fec_scheme == FEC_MULT ? tx->mult_count : 1;
 
-    // Set up timers to measure for the traffic shaping
-#ifdef HAVE_LINUX
-    struct timespec start, stop;
-#elif defined HAVE_MACOSX
-    struct timeval start, stop;
-#else // Windows
-	LARGE_INTEGER start, stop, freq;
-#endif
-
     // Loop for each packet we are sending
     for(int packetIndex = startingPacket; packetIndex < startingPacket + packetAmount; packetIndex++) {
-        GET_STARTTIME;
-        long delta = 0;
-
         // Create a unique header block for the packet and copy the rtp header block
         std::unique_ptr<uint32_t[]> rtpHeaderPacket = std::make_unique<uint32_t[]>(rtpHeaderLen);
         std::copy(rtpHeader, rtpHeader + rtpHeaderLen, rtpHeaderPacket.get());

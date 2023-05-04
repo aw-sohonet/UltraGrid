@@ -1540,6 +1540,13 @@ struct PacketData {
     unsigned int substream;
 };
 
+// Forward declare the functions
+FecData getFecData(rtp_packet& pckt);
+bool checkDecryption(state_video_decoder* decoder, rtp_packet& pckt);
+void buildFrame(const std::vector<PacketData>& packetDataVec, UIntPair block, bool decrypt, openssl_mode cryptoMode,
+                state_video_decoder* decoder, unsigned int packetType, size_t bufferLength, video_frame* frame,
+                map<int, int>* fecPacketData, openssl_decrypt* decryption);
+
 /**
  *  @brief A function for getting the FEC data from the packet. This is done
  *         by checking the packet type, and then extracting the data (or returning)
@@ -1678,7 +1685,7 @@ void buildFrame(const std::vector<PacketData>& packetDataVec, UIntPair block, bo
                     int offset = y + dX;
 
                     /* watch the SEGV */
-                    if (l + line_decoder->base_offset + offset <= tile->data_len) {
+                    if (static_cast<unsigned int>(l + line_decoder->base_offset + offset) <= tile->data_len) {
                         /*decode frame:
                             * we have offset for destination
                             * we update source contiguously
@@ -1750,7 +1757,6 @@ bool decode_video_frame(std::unique_ptr<BufferFrame> bufferFrame, vcodec_state* 
 
     bool ret = true;
     rtp_packet* pckt = NULL;
-    int prints=0;
     int maxSubstreams = decoder->max_substreams;
     uint32_t ssrc = 0U;
     unsigned int frame_size = 0;
@@ -1770,7 +1776,7 @@ bool decode_video_frame(std::unique_ptr<BufferFrame> bufferFrame, vcodec_state* 
     int bufferNumber = 0;
     int bufferLength = 0;
     int packetType = 0;
-    bool decrypt;
+    bool decrypt = false;
 
     // Check if there is a frame buffer assigned to the decoder. If not, then
     // error out.
@@ -1890,9 +1896,6 @@ bool decode_video_frame(std::unique_ptr<BufferFrame> bufferFrame, vcodec_state* 
         size_t dataLen;
         size_t dataPos;
         unsigned int substream;
-
-        // Create variables for tracking different items in the loop
-        unsigned int offset;
         
         // Extract the ssrc, and packet type from packet
         packetType = packet->pt;
@@ -2020,7 +2023,7 @@ bool decode_video_frame(std::unique_ptr<BufferFrame> bufferFrame, vcodec_state* 
         decoder->buffer_swapped = false;
     }
     else {
-        for(int i = 0; i < largestSubstream + 1; i++) {
+        for(int i = 0; i < static_cast<int>(largestSubstream) + 1; i++) {
             frame->tiles[i].data = (char *) malloc(bufferLength + PADDING);
             frame->tiles[i].data_len = bufferLength;
         }

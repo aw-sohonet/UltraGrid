@@ -33,7 +33,7 @@ private:
     std::condition_variable mutexCondition; // Allows threads to wait on new jobs or termination
     std::vector<std::thread> threads;
     std::queue<std::function<void(T)>> jobs;
-    int threadCount;
+    int threadCount = -1;
 };
 
 /**
@@ -47,7 +47,7 @@ ThreadPool<T>::ThreadPool(std::vector<T> threadResources, int threadCount) : thr
         this->threadCount = std::thread::hardware_concurrency();
     }
     // Assert that there are enough thread resources being made for the threads.
-    assert(this->threadResources.size() >= this->threadCount);
+    assert(this->threadResources.size() >= static_cast<unsigned long>(this->threadCount));
 }
 
 /**
@@ -71,7 +71,7 @@ void ThreadPool<T>::Start() {
     this->threads.resize(this->threadCount);
 
     // Create the thread workers
-    for(uint32_t i = 0; i < this->threadCount; i++) {
+    for(int i = 0; i < this->threadCount; i++) {
         threads.at(i) = std::thread(&ThreadPool::workerLoop, this, i);
     }
 }

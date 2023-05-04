@@ -465,7 +465,7 @@ PlayoutBufferStats::PlayoutBufferStats(const PlayoutBufferStats& playoutStats) {
  * @brief An implementation of the assignment operator which uses the copy constructor
  *        to copy across the data.
  */
-PlayoutBufferStats& PlayoutBufferStats::operator=(const PlayoutBufferStats& other) {
+PlayoutBufferStats& PlayoutBufferStats::operator=(__attribute__((unused)) const PlayoutBufferStats& other) {
     return *this;
 }
 

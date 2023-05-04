@@ -670,9 +670,6 @@ static bool audio_fec_decode_channels(struct pbuf_audio_data *s, vector<std::uni
         // multiplication as it's not relevant when decoding
         decoder->rs_state = new rs(fecChannelData[0]->getKBlocks(), fecChannelData[0]->getMBlocks() + fecChannelData[0]->getKBlocks(), 1);
     }
-
-    audio_desc desc{};
-
     audio_desc audioDesc{};
 
     // Iterate through each channel and decode the FEC output

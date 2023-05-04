@@ -314,8 +314,6 @@ void *ultragrid_rtp_video_rxtx::receiver_loop()
     set_thread_name(__func__);
     int fr;
     int ret;
-    int tiles_post = 0;
-    time_ns_t last_tile_received = 0;
     int last_buf_size = INITIAL_VIDEO_RECV_BUFFER_SIZE;
 
 #ifdef SHARED_DECODER
@@ -335,9 +333,6 @@ void *ultragrid_rtp_video_rxtx::receiver_loop()
     resources.push_back(nullptr);
     ThreadPool<void*> threadPool = ThreadPool<void*>(resources, 1);
     threadPool.Start();
-
-    std::chrono::high_resolution_clock::time_point start = std::chrono::high_resolution_clock::now();
-    std::chrono::high_resolution_clock::time_point end = std::chrono::high_resolution_clock::now();
 
     while (!should_exit) {
         struct timeval timeout;
@@ -429,7 +424,7 @@ void *ultragrid_rtp_video_rxtx::receiver_loop()
                 std::unique_ptr<BufferFrame> displayFrame = playoutBuffer->popNextDisplayReadyFrame();
                 while(displayFrame != nullptr) {
                     auto wrapper = std::make_shared<VideoDecoderWrapper>(std::move(displayFrame), vdecoder_state, playoutBuffer->getStats());
-                    std::function<void(void*)> decodeFrameLambda = [wrapper] (void* placeholder) {
+                    std::function<void(void*)> decodeFrameLambda = [wrapper] (__attribute__((unused)) void* placeholder) {
                         wrapper->decode();
                     };
                     threadPool.QueueJob(decodeFrameLambda);
