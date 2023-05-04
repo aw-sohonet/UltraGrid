@@ -280,7 +280,7 @@ void BufferFrame::insertPacketOrdered(std::unique_ptr<rtp_packet> packet) {
         auto insertPos = std::find_if(this->packets.begin(), this->packets.end(), packetComparator);
 
         // Check to see if the m-bit was set on the packet (should be the last packet for the frame)
-        if(packet->m == 1) {
+        if(packet->m) {
             this->mBit = true;
         }
 

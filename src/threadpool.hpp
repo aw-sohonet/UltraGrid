@@ -171,6 +171,7 @@ void ThreadPool<T>::Stop() {
         activeThread.join();
     }
     this->threads.clear();
+    this->shouldTerminate = false;
 }
 
 /**

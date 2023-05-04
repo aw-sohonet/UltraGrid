@@ -1510,8 +1510,7 @@ static void compute_loss_intervals(struct rtp *session, rtp_packet * packet)
 }
 
 static void
-process_rtp(struct rtp *session, uint32_t curr_rtp_ts, rtp_packet * packet,
-            source * s)
+process_rtp(struct rtp *session, uint32_t curr_rtp_ts, rtp_packet* packet, source * s)
 {
         int i, d, transit;
         rtp_event event;
@@ -1542,8 +1541,6 @@ process_rtp(struct rtp *session, uint32_t curr_rtp_ts, rtp_packet * packet,
         if (!filter_event(session, packet->ssrc)) {
                 event.ssrc = packet->ssrc;
                 event.type = RX_RTP;
-
-                //              printf("This packet is going to have size %d\n",sizeof(packet));
                 event.data = (void *)packet;    /* The callback function MUST free this! */
                 session->callback(session, &event);
         }

@@ -254,6 +254,7 @@ struct tx {
         struct openssl_encrypt *encryption;
         openssl_mode encryption_mode;
         std::vector<struct openssl_encrypt*> encryption_resources;
+        std::unique_ptr<ThreadPool<struct openssl_encrypt*>> threadPool;
         unsigned int thread_count;
         PacketTiming videoTiming;
         PacketTiming audioTiming;
@@ -440,6 +441,7 @@ struct tx *tx_init(struct module *parent, unsigned mtu, enum tx_media_type media
 
         tx->audioTiming = PacketTiming(200, MediaType::MEDIA_AUDIO);
         tx->videoTiming = PacketTiming(200, MediaType::MEDIA_VIDEO);
+        tx->threadPool = std::make_unique<ThreadPool<struct openssl_encrypt*>>(tx->encryption_resources, tx->thread_count);
 
         return tx;
 }
@@ -1109,9 +1111,8 @@ static void tx_send_base(struct tx *tx, struct video_frame *frame, struct rtp *r
         }
 
         // Create the threadpool and initialise the workers.
-        ThreadPool<struct openssl_encrypt*> threadPool = ThreadPool<struct openssl_encrypt*>(tx->encryption_resources, tx->thread_count);
         unsigned int threadCount = tx->thread_count;
-        threadPool.Start();
+        tx->threadPool->Start();
 
         // Create a list of bound functions to ensure they are executed last
         std::vector<std::function<void(struct openssl_encrypt*)>> finalPackets = std::vector<std::function<void(struct openssl_encrypt*)>>();
@@ -1151,7 +1152,7 @@ static void tx_send_base(struct tx *tx, struct video_frame *frame, struct rtp *r
             {
                 tx_send_packets(tx, rtpSession, packetSizes, packetInfo, rtpHeader, rtpHeaderSize / sizeof(uint32_t), blockBegin, blockSize, encryption);
             };
-            threadPool.QueueJob(job);
+            tx->threadPool->QueueJob(job);
 
             // Increment the beginning of the next block by the size we are sending
             blockBegin += blockSize;
@@ -1177,12 +1178,12 @@ static void tx_send_base(struct tx *tx, struct video_frame *frame, struct rtp *r
         }
 
         // Wait for the threads to finish taking jobs off of the queue
-        while(threadPool.Busy());
+        while(tx->threadPool->Busy());
         // Join all remaining working threads as this ensures all packets are sent
-        threadPool.Stop();
+        tx->threadPool->Stop();
 
         // Send the last packet
-        tx_send_packets(tx, rtpSession, packetSizes, packetInfo, rtpHeader, rtpHeaderSize / sizeof(uint32_t), packetCount - 1, 1, threadPool.threadResources.at(0));
+        tx_send_packets(tx, rtpSession, packetSizes, packetInfo, rtpHeader, rtpHeaderSize / sizeof(uint32_t), packetCount - 1, 1, tx->threadPool->threadResources.at(0));
 
         // Measure the time it has taken to send the video packets, and then, if enough time has passed,
         // report on it.

@@ -218,7 +218,7 @@ void rtp_packet_receive_callback(rtp* session, rtp_event* e, CallbackType callba
             {
                 // The event owns the copy of the packet that we intend to hand 
                 // ownership of into the playout buffer.
-                auto packet = (rtp_packet *) e->data;
+                rtp_packet* packet = (rtp_packet *) e->data;
                 switch(callbackType) {
                     case CALLBACK_VIDEO:
                         {
