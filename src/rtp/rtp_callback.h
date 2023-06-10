@@ -47,6 +47,13 @@
 extern "C" {
 #endif
 
+enum CallbackType {
+    CALLBACK_VIDEO = 0,
+    CALLBACK_AUDIO = 1,
+    CALLBACK_DEPRECATED = 2
+};
+
+void rtp_packet_receive_callback(struct rtp* session, rtp_event* e, enum CallbackType callbackType);
 void rtp_recv_callback(struct rtp *session, rtp_event *e);
 int handle_with_buffer(struct rtp *session,rtp_event *e);
 int check_for_frame_completion(struct rtp *);

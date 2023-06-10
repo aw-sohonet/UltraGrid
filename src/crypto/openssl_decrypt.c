@@ -90,7 +90,6 @@ static int openssl_decrypt_init(struct openssl_decrypt **state,
         MD5Final(s->key_hash, &context);
 
         s->ctx = EVP_CIPHER_CTX_new();
-        log_msg(LOG_LEVEL_INFO, MOD_NAME "Enabled stream decryption.\n");
 
         *state = s;
         return 0;
@@ -126,10 +125,10 @@ static int openssl_decrypt(struct openssl_decrypt *decrypt,
         ciphertext_len -= 20;
 
         CHECK(EVP_CipherInit(decrypt->ctx, cipher, decrypt->key_hash, iv, 0), "Unable to initialize cipher");
-        CHECK(EVP_CIPHER_CTX_ctrl(decrypt->ctx, EVP_CTRL_GCM_SET_IVLEN, 16, NULL), "set IV len"); // default IV len is presumably 12 bytes
 
         int out_len = 0;
         if (mode == MODE_AES128_GCM) {
+                CHECK(EVP_CIPHER_CTX_ctrl(decrypt->ctx, EVP_CTRL_GCM_SET_IVLEN, 16, NULL), "set IV len"); // default IV len is presumably 12 bytes
                 ciphertext_len -= GCM_TAG_LEN;
                 if (aad && aad_len > 0) {
                         if (!EVP_DecryptUpdate(decrypt->ctx, NULL, &out_len, (void *) aad, aad_len)) {
@@ -140,21 +139,21 @@ static int openssl_decrypt(struct openssl_decrypt *decrypt,
         CHECK(EVP_CipherUpdate(decrypt->ctx, (unsigned char *) plaintext, &out_len, (const unsigned char *) ciphertext, ciphertext_len), "EVP_CipherUpdate");
         int total_len = out_len;
         if (mode == MODE_AES128_GCM) {
-                CHECK(EVP_CIPHER_CTX_ctrl(decrypt->ctx, EVP_CTRL_GCM_SET_TAG, GCM_TAG_LEN, (void *) (ciphertext + ciphertext_len)), "GCM set tag");
+            CHECK(EVP_CIPHER_CTX_ctrl(decrypt->ctx, EVP_CTRL_GCM_SET_TAG, GCM_TAG_LEN, (void *) (ciphertext + ciphertext_len)), "GCM set tag");
         }
         CHECK(EVP_CipherFinal(decrypt->ctx, (unsigned char *) plaintext + out_len, &out_len), "EVP_CipherFinal");
         total_len += out_len;
 
         if (mode != MODE_AES128_GCM) {
-                uint32_t expected_crc = 0;
-                assert((size_t) total_len >= data_len + sizeof expected_crc);
-                memcpy(&expected_crc, plaintext + data_len, sizeof expected_crc);
-                uint32_t crc = crc32buf(aad, aad_len);
-                crc = crc32buf_with_oldcrc(plaintext, data_len, crc);
-                if (crc != expected_crc) {
-                        log_msg(LOG_LEVEL_WARNING, MOD_NAME "Warning: Packet dropped AES - wrong CRC!\n");
-                        return 0;
-                }
+            uint32_t expected_crc = 0;
+            assert((size_t) total_len >= data_len + sizeof expected_crc);
+            memcpy(&expected_crc, plaintext + data_len, sizeof expected_crc);
+            uint32_t crc = crc32buf(aad, aad_len);
+            crc = crc32buf_with_oldcrc(plaintext, data_len, crc);
+            if (crc != expected_crc) {
+                log_msg(LOG_LEVEL_WARNING, MOD_NAME "Warning: Packet dropped AES - wrong CRC!\n");
+                return 0;
+            }
         }
 
         return data_len;

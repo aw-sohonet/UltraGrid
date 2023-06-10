@@ -711,6 +711,9 @@ static bool parse_option(struct vidcap_decklink_state *s, const char *opt)
                 s->nosig_send = true;
         } else if (strstr(opt, "keep-settings") == opt) {
                 s->keep_device_defaults = true;
+        } else if ((strcasecmp(opt, "single-link") == 0) || (strcasecmp(opt, "dual-link") == 0) || (strcasecmp(opt, "quad-link") == 0)){
+                LOG(LOG_LEVEL_WARNING) << "Using old input specification. This option has been "
+                                          "removed as it is automatically detected (and has been for some time)\n";
         } else {
                 log_msg(LOG_LEVEL_WARNING, "[DeckLink] Warning, unrecognized trailing options in init string: %s\n", opt);
                 return false;

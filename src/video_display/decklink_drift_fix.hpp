@@ -307,6 +307,11 @@ public:
                         commandline_params["resampler"] = "soxr";
                 }
         }
+
+        void disable() {
+                m_enabled = false;
+        }
+
         /**
          * @brief Set the max hz object
          * 
@@ -400,7 +405,8 @@ public:
                 // Calculate the average
                 uint32_t average_buffer_depth = (uint32_t)(this->average_buffer_samples.avg());
 
-                int resample_hz = dst_frame_rate = (bmdAudioSampleRate48kHz) * BASE;
+                int resample_hz = 0;
+                dst_frame_rate = (bmdAudioSampleRate48kHz) * BASE;
 
                 // Check to see if our buffered samples has enough to calculate a good average
                 if (this->average_buffer_samples.filled()) {
@@ -456,7 +462,7 @@ public:
         }
 
 private:
-        bool m_enabled = false;
+        bool m_enabled = true;
 
         static constexpr unsigned long BASE = (1U<<8U);
         struct module *m_root = nullptr;
@@ -478,8 +484,8 @@ private:
         uint32_t neg_jitter = 5;
         // Currently unused but might form a part of a more dynamic
         // solution to finding good jitter values in the future. @todo
-        [[maybe_unused]] uint32_t max_avg = 3650;
-        [[maybe_unused]] uint32_t min_avg = 1800;
+        uint32_t max_avg = 3650;
+        uint32_t min_avg = 1800;
 
         // Store a audio_summary of resampling
         DecklinkAudioSummary audio_summary{};

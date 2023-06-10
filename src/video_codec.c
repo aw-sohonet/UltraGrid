@@ -483,7 +483,7 @@ bool codec_is_hw_accelerated(codec_t codec) {
 /** @brief Returns aligned linesize according to pixelformat specification (in bytes) */
 int vc_get_linesize(unsigned int width, codec_t codec)
 {
-        if (codec >= sizeof codec_info / sizeof(struct codec_info_t)) {
+        if (codec >= sizeof codec_info / sizeof(struct codec_info_t) || codec == VIDEO_CODEC_NONE) {
                 return 0;
         }
 
@@ -494,6 +494,7 @@ int vc_get_linesize(unsigned int width, codec_t codec)
                     codec_info[codec].h_align;
         }
         int pixs = codec_info[codec].block_size_pixels;
+
         return (width + pixs - 1) / pixs * codec_info[codec].block_size_bytes;
 }
 

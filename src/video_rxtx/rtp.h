@@ -38,6 +38,8 @@
 #ifndef VIDEO_RXTX_RTP_H_
 #define VIDEO_RXTX_RTP_H_
 
+#include "participant_db.hpp"
+#include "pdb.h"
 #include "tv.h"
 #include "video_rxtx.h"
 
@@ -62,7 +64,7 @@ public:
         virtual ~rtp_video_rxtx();
 
         static struct rtp **initialize_network(const char *addrs, int recv_port_base,
-                        int send_port_base, struct pdb *participants, int force_ip_version,
+                        int send_port_base, ParticipantDB<vcodec_state>* participants, int force_ip_version,
                         const char *mcast_if, int ttl);
         void destroy_rtp_devices(struct rtp ** network_devices);
         static void display_buf_increase_warning(int size);
@@ -72,7 +74,7 @@ protected:
         struct rtp **m_network_devices; // ULTRAGRID_RTP
         std::mutex m_network_devices_lock;
         struct tx *m_tx;
-        struct pdb *m_participants;
+        std::shared_ptr<ParticipantDB<vcodec_state>> m_participants;
         std::string      m_requested_receiver;
         int              m_recv_port_number;
         int              m_send_port_number;

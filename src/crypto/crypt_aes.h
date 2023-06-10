@@ -87,6 +87,9 @@ typedef struct {                    /* changed order of the components */
 } cipherInstance;
 
 /*  Function prototypes  */
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 int makeKey(keyInstance *key, BYTE direction, int keyLen, char *keyMaterial);
 
@@ -106,5 +109,9 @@ int padDecrypt(cipherInstance *cipher, keyInstance *key,
 
 int cipherUpdateRounds(cipherInstance *cipher, keyInstance *key,
         BYTE *input, int inputLen, BYTE *outBuffer, int Rounds);
+        
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* __RIJNDAEL_API_FST_H */

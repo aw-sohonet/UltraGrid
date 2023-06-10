@@ -136,7 +136,6 @@ static int openssl_encrypt_init(struct openssl_encrypt **state, const char *pass
 
         s->ctx = EVP_CIPHER_CTX_new();
         s->mode = mode;
-        log_msg(LOG_LEVEL_INFO, MOD_NAME "Encryption set to mode %d\n", (int) mode);
 
         *state = s;
         return 0;
@@ -165,10 +164,10 @@ static int openssl_encrypt(struct openssl_encrypt *encryption,
         total_len += sizeof ivec;
 
         CHECK(EVP_CipherInit(encryption->ctx, encryption->cipher, encryption->key_hash, ivec, 1), "Cannot initialize cipher");
-        /* Set IV length if default 12 bytes (96 bits) is not appropriate */
-        CHECK(EVP_CIPHER_CTX_ctrl(encryption->ctx, EVP_CTRL_GCM_SET_IVLEN, sizeof ivec, NULL), "set IV len");
         int out_len = 0;
         if (encryption->mode == MODE_AES128_GCM) {
+                /* Set IV length if default 12 bytes (96 bits) is not appropriate */
+                CHECK(EVP_CIPHER_CTX_ctrl(encryption->ctx, EVP_CTRL_GCM_SET_IVLEN, sizeof ivec, NULL), "set IV len");
                 if (aad_len > 0) {
                         EVP_EncryptUpdate(encryption->ctx, NULL, &out_len, (unsigned char *) aad, aad_len);
                 }
