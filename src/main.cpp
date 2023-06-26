@@ -508,13 +508,13 @@ static void *capture_thread(void *arg)
 }
 
 static bool parse_bitrate(char *optarg, long long int *bitrate) {
-        map<const char *, long long int> bitrate_spec_map = {
+        map<std::string, long long int> bitrate_spec_map = {
                 { "auto", RATE_AUTO },
                 { "dynamic", RATE_DYNAMIC },
                 { "unlimited", RATE_UNLIMITED },
         };
 
-        if (auto it = bitrate_spec_map.find(optarg); it != bitrate_spec_map.end()) {
+        if (auto it = bitrate_spec_map.find(std::string(optarg)); it != bitrate_spec_map.end()) {
                 *bitrate = it->second;
                 return true;
         }
