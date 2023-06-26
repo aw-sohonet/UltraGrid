@@ -102,7 +102,7 @@
 
 #define CONTROL_PORT_BANDWIDTH_REPORT_INTERVAL_MS 1000
 
-#define PACKET_PACING_DEFAULT 25000000
+#define NANOSECOND 1000'000'000
 
 #ifdef HAVE_MACOSX
 #define GET_STARTTIME gettimeofday(&start, NULL)
@@ -202,14 +202,23 @@ public:
      *
      * @param packetCount
      */
-    void report(size_t packetCount) {
+    void report(size_t packetCount, uint32_t frameTarget = 0) {
         std::chrono::high_resolution_clock::time_point now = std::chrono::high_resolution_clock::now();
         long long timeSinceReport = std::chrono::duration_cast<std::chrono::seconds>(now - this->reportTiming).count();
 
         if(timeSinceReport > 10) {
-            LOG(LOG_LEVEL_INFO) << MOD_NAME << "Packet processing time average for "
-                                << (this->mediaType == MediaType::MEDIA_VIDEO ? "video" : "audio")
-                                << " is: " << this->average() << "ms with " << packetCount << " packets.\n";
+            std::stringstream message;
+            message << MOD_NAME << "Packet processing time average for "
+                    << (this->mediaType == MediaType::MEDIA_VIDEO ? "video" : "audio")
+                    << " is: " << this->average() << "ms with " << packetCount << " packets. ";
+
+            // Optionally output the frame target so that this can be compared with the actual value.
+            if(frameTarget != 0) {
+                message << "Frame Target: " << frameTarget << "ns.";
+            }
+            message << "\n";
+
+            LOG(LOG_LEVEL_INFO) << message.str();
             this->reportTiming = now;
         }
     }
@@ -334,7 +343,7 @@ ADD_TO_PARAM("encode-thread-count", "* encode-thread-count=<Thread Count>\n"
 
 ADD_TO_PARAM("video-frame-target", "* video-frame-target=<Target in ms>\n"
              "  The target for sending out all packets (for shaping purposes) in ms (milliseconds)."
-             " Set to zero to turn off the shaping");
+             " Set to zero to use 66% of the duration of the frame.");
 
 struct tx *tx_init(struct module *parent, unsigned mtu, enum tx_media_type media_type,
                 const char *fec, const char *encryption, long long int bitrate)
@@ -394,8 +403,8 @@ struct tx *tx_init(struct module *parent, unsigned mtu, enum tx_media_type media
             tx->videoFrameTarget = frameTarget * 1000 * 1000;
         }
         else {
-            // Otherwise set to a default
-            tx->videoFrameTarget = PACKET_PACING_DEFAULT;
+            // Otherwise set to a default (zero will use 66% of the duration of the frame)
+            tx->videoFrameTarget = 0;
         }
 
         if (encryption) {
@@ -838,6 +847,25 @@ __attribute__((unused)) static long get_packet_rate(struct tx *tx, struct video_
         return packet_rate;
 }
 
+uint32_t calculateFrameTarget(struct tx* tx, struct video_frame* frame) {
+    // If we're not limiting the rate, then return 0.
+    switch(tx->bitrate) {
+        case RATE_UNLIMITED: {
+            return 0;
+        }
+        default: {
+            // Calculate the number of nanoseconds required for this frame to play
+            auto frameDuration = static_cast<uint32_t>(NANOSECOND / frame->fps);
+            // The sending of packets occurs once for each tile, so the target timing for sending the "frame"
+            // needs to be split per tile.
+            uint32_t frameTarget = (frameDuration / frame->tile_count);
+            // We cannot use the entire duration of the frame, as we need timing for other operations, but we
+            // could use up to 66% of the duration of the frame (28ms for a 24fps frame).
+            return (frameTarget / 3) * 2;
+        }
+    }
+}
+
 // static void tx_send_base(struct tx *tx, struct video_frame *frame, struct rtp *rtpSession,
 //                          uint32_t ts, int send_m, unsigned int substream, int fragment_offset)
 // {
@@ -1095,6 +1123,12 @@ static void tx_send_base(struct tx *tx, struct video_frame *frame, struct rtp *r
             rtpHeaderSize += sizeof(crypto_payload_hdr_t);
         }
 
+        // Calculate our packet timing. If zero, then it has not been set to a static value from
+        // the command line.
+        if(tx->videoFrameTarget == 0) {
+            tx->videoFrameTarget = calculateFrameTarget(tx, frame);
+        }
+
         // Calculate the size of all of the out-going packets. This varies based off of MTU, and FEC settings.
         // (Try and ensure FEC settings don't exceed the size of the MTU otherwise we'll get fragmented packets)
         vector<int> packetSizes = get_packet_sizes(frame, static_cast<int>(substream), tx->mtu - headersLen);
@@ -1183,7 +1217,7 @@ static void tx_send_base(struct tx *tx, struct video_frame *frame, struct rtp *r
         // Measure the time it has taken to send the video packets, and then, if enough time has passed,
         // report on it.
         tx->videoTiming.measure();
-        tx->videoTiming.report(packetCount);
+        tx->videoTiming.report(packetCount, tx->videoFrameTarget);
 
         if (!tx->encryption) {
                 rtp_async_wait(rtpSession);
@@ -1216,6 +1250,9 @@ void tx_send_packets(struct tx *tx, struct rtp *rtpSession, const std::vector<in
 
     // Loop for each packet we are sending
     for(int packetIndex = startingPacket; packetIndex < startingPacket + packetAmount; packetIndex++) {
+        // Create a loop index to keep track of how many times this loop has occurred.
+        int loopIndex = packetIndex - startingPacket;
+
         // Create a unique header block for the packet and copy the rtp header block
         std::unique_ptr<uint32_t[]> rtpHeaderPacket = std::make_unique<uint32_t[]>(rtpHeaderLen);
         std::copy(rtpHeader, rtpHeader + rtpHeaderLen, rtpHeaderPacket.get());
@@ -1273,7 +1310,8 @@ void tx_send_packets(struct tx *tx, struct rtp *rtpSession, const std::vector<in
             // Get the time now
             std::chrono::high_resolution_clock::time_point now = std::chrono::high_resolution_clock::now();
             // Calculate where we should be according to our target
-            std::chrono::high_resolution_clock::time_point target = start + (std::chrono::nanoseconds(packetDurationTarget) * (packetIndex - startingPacket + 1));
+            std::chrono::duration targetDuration = std::chrono::nanoseconds(packetDurationTarget) * (loopIndex + 1);
+            std::chrono::high_resolution_clock::time_point target = start + targetDuration;
             // Loop until we're on target
             while(now < target) {
                 now = std::chrono::high_resolution_clock::now();
