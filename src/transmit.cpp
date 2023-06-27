@@ -265,7 +265,7 @@ struct tx {
         PacketTiming videoTiming;
         PacketTiming audioTiming;
 
-        uint32_t videoFrameTarget;
+        uint64_t videoFrameTarget;
         
         long long int bitrate;
         struct rate_limit_dyn dyn_rate_limit_state;
@@ -398,7 +398,7 @@ struct tx *tx_init(struct module *parent, unsigned mtu, enum tx_media_type media
 
         const char* videoFrameTarget = get_commandline_param("video-frame-target");
         if(videoFrameTarget) {
-            uint32_t frameTarget = std::stoi(videoFrameTarget);
+            uint64_t frameTarget = std::stoi(videoFrameTarget);
             // Convert the target to nanoseconds.
             tx->videoFrameTarget = frameTarget * 1000 * 1000;
         }
@@ -1237,7 +1237,7 @@ void tx_send_packets(struct tx *tx, struct rtp *rtpSession, const std::vector<in
         packetPace = false;
     }
     // Calculate the timing for each packet - Nanoseconds
-    uint32_t packetDurationTarget = tx->videoFrameTarget / packetAmount;
+    uint64_t packetDurationTarget = tx->videoFrameTarget / packetAmount;
 
     // Set up the variables we will use to send the packets
     size_t pos = initialPos;
@@ -1307,15 +1307,11 @@ void tx_send_packets(struct tx *tx, struct rtp *rtpSession, const std::vector<in
         // performance against our expected performance. If we are ahead
         // we should wait until we're at our expected timing.
         if(packetPace) {
-            // Get the time now
-            std::chrono::high_resolution_clock::time_point now = std::chrono::high_resolution_clock::now();
             // Calculate where we should be according to our target
             std::chrono::duration targetDuration = std::chrono::nanoseconds(packetDurationTarget) * (loopIndex + 1);
             std::chrono::high_resolution_clock::time_point target = start + targetDuration;
             // Loop until we're on target
-            while(now < target) {
-                now = std::chrono::high_resolution_clock::now();
-            }
+            while(std::chrono::high_resolution_clock::now() < target);
         }
 
         // Push forward the position by the amount of data we just sent
