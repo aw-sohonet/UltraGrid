@@ -139,7 +139,7 @@ void audio_tx_send_channel_segments(struct tx* tx, struct rtp *rtp_session, cons
 
 static bool set_fec(struct tx *tx, const char *fec);
 static void fec_check_messages(struct tx *tx);
-uint32_t calculateFrameTarget(struct tx*, struct video_frame*);
+uint64_t calculateFrameTarget(struct tx*, struct video_frame*);
 
 struct rate_limit_dyn {
         unsigned long avg_frame_size;   ///< moving average
@@ -848,7 +848,7 @@ __attribute__((unused)) static long get_packet_rate(struct tx *tx, struct video_
         return packet_rate;
 }
 
-uint32_t calculateFrameTarget(struct tx* tx, struct video_frame* frame) {
+uint64_t calculateFrameTarget(struct tx* tx, struct video_frame* frame) {
     // If we're not limiting the rate, then return 0.
     switch(tx->bitrate) {
         case RATE_UNLIMITED: {
@@ -856,10 +856,10 @@ uint32_t calculateFrameTarget(struct tx* tx, struct video_frame* frame) {
         }
         default: {
             // Calculate the number of nanoseconds required for this frame to play
-            auto frameDuration = static_cast<uint32_t>(NANOSECOND / frame->fps);
+            auto frameDuration = static_cast<uint64_t>(NANOSECOND / frame->fps);
             // The sending of packets occurs once for each tile, so the target timing for sending the "frame"
             // needs to be split per tile.
-            uint32_t frameTarget = (frameDuration / frame->tile_count);
+            uint64_t frameTarget = (frameDuration / frame->tile_count);
             // We cannot use the entire duration of the frame, as we need timing for other operations, but we
             // could use up to 66% of the duration of the frame (28ms for a 24fps frame).
             return (frameTarget / 3) * 2;
