@@ -139,6 +139,7 @@ void audio_tx_send_channel_segments(struct tx* tx, struct rtp *rtp_session, cons
 
 static bool set_fec(struct tx *tx, const char *fec);
 static void fec_check_messages(struct tx *tx);
+uint32_t calculateFrameTarget(struct tx*, struct video_frame*);
 
 struct rate_limit_dyn {
         unsigned long avg_frame_size;   ///< moving average
@@ -1248,7 +1249,7 @@ void tx_send_packets(struct tx *tx, struct rtp *rtpSession, const std::vector<in
     // Get the timing from the beginning, so we can calculate if we're on target or not.
     std::chrono::high_resolution_clock::time_point start = std::chrono::high_resolution_clock::now();
     // Keep track of the total time spent pacing
-    std::chrono::duration idleDuration = std::chrono::duration(std::chrono::nanoseconds(0));
+    std::chrono::duration idleDuration = std::chrono::nanoseconds(0);
 
     // Loop for each packet we are sending
     for(int packetIndex = startingPacket; packetIndex < startingPacket + packetAmount; packetIndex++) {
@@ -1309,7 +1310,7 @@ void tx_send_packets(struct tx *tx, struct rtp *rtpSession, const std::vector<in
         // performance against our expected performance. If we are ahead
         // we should wait until we're at our expected timing.
         if(packetPace) {
-            // Get the time sentTimePoint
+            // Get the time
             std::chrono::high_resolution_clock::time_point sentTimePoint = std::chrono::high_resolution_clock::now();
             // Calculate where we should be according to our target
             std::chrono::duration targetDuration = std::chrono::nanoseconds(packetDurationTarget) * (loopIndex + 1);
