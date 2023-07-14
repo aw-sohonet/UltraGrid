@@ -1237,8 +1237,12 @@ void tx_send_packets(struct tx *tx, struct rtp *rtpSession, const std::vector<in
     if(tx->videoFrameTarget == 0) {
         packetPace = false;
     }
+
+    uint64_t packetDurationTarget = 0;
     // Calculate the timing for each packet - Nanoseconds
-    uint64_t packetDurationTarget = tx->videoFrameTarget / packetAmount;
+    if(packetAmount > 0) {
+        packetDurationTarget = tx->videoFrameTarget / packetAmount;
+    }
 
     // Set up the variables we will use to send the packets
     size_t pos = initialPos;
