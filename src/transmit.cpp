@@ -102,6 +102,8 @@
 
 #define CONTROL_PORT_BANDWIDTH_REPORT_INTERVAL_MS 1000
 
+#define NANOSECOND 1000'000'000
+
 #ifdef HAVE_MACOSX
 #define GET_STARTTIME gettimeofday(&start, NULL)
 #define GET_STOPTIME gettimeofday(&stop, NULL)
@@ -137,6 +139,7 @@ void audio_tx_send_channel_segments(struct tx* tx, struct rtp *rtp_session, cons
 
 static bool set_fec(struct tx *tx, const char *fec);
 static void fec_check_messages(struct tx *tx);
+uint64_t calculateFrameTarget(struct tx*, struct video_frame*);
 
 struct rate_limit_dyn {
         unsigned long avg_frame_size;   ///< moving average
@@ -200,13 +203,23 @@ public:
      *
      * @param packetCount
      */
-    void report(size_t packetCount) {
+    void report(size_t packetCount, uint32_t frameTarget = 0) {
         std::chrono::high_resolution_clock::time_point now = std::chrono::high_resolution_clock::now();
         long long timeSinceReport = std::chrono::duration_cast<std::chrono::seconds>(now - this->reportTiming).count();
 
         if(timeSinceReport > 10) {
-            LOG(LOG_LEVEL_INFO) << "[transmit] Packet processing time average for " << (this->mediaType == MediaType::MEDIA_VIDEO ? "video" : "audio") << " is: " << this->average()
-                                << "ms with " << packetCount << " packets\n";
+            std::stringstream message;
+            message << MOD_NAME << "Packet processing time average for "
+                    << (this->mediaType == MediaType::MEDIA_VIDEO ? "video" : "audio")
+                    << " is: " << this->average() << "ms with " << packetCount << " packets. ";
+
+            // Optionally output the frame target so that this can be compared with the actual value.
+            if(frameTarget != 0) {
+                message << "Frame Target: " << frameTarget << "ns.";
+            }
+            message << "\n";
+
+            LOG(LOG_LEVEL_INFO) << message.str();
             this->reportTiming = now;
         }
     }
@@ -252,6 +265,8 @@ struct tx {
         unsigned int thread_count;
         PacketTiming videoTiming;
         PacketTiming audioTiming;
+
+        uint64_t videoFrameTarget;
         
         long long int bitrate;
         struct rate_limit_dyn dyn_rate_limit_state;
@@ -277,7 +292,7 @@ struct PacketInfo {
 };
 
 void tx_send_packets(struct tx *tx, struct rtp *rtpSession, const std::vector<int>& packetSizes, const struct PacketInfo& packetInfo,
-                     const uint32_t* rtpHeader, int rtpHeaderLen, int startingPacket, int packetAmount, struct openssl_encrypt* encryption);
+                     const uint32_t* rtpHeader, int rtpHeaderLen, int startingPacket, int packetAmount, bool packetPace, struct openssl_encrypt* encryption);
 
 
 static void tx_update(struct tx *tx, struct video_frame *frame, int substream)
@@ -326,6 +341,10 @@ ADD_TO_PARAM("encryption-mode", "* encryption-mode=<encryption mode number>\n"
 
 ADD_TO_PARAM("encode-thread-count", "* encode-thread-count=<Thread Count>\n"
              "  The number of threads to use when encrypting packets.\n");
+
+ADD_TO_PARAM("video-frame-target", "* video-frame-target=<Target in ms>\n"
+             "  The target for sending out all packets (for shaping purposes) in ms (milliseconds)."
+             " Set to zero to use 66% of the duration of the frame.");
 
 struct tx *tx_init(struct module *parent, unsigned mtu, enum tx_media_type media_type,
                 const char *fec, const char *encryption, long long int bitrate)
@@ -376,6 +395,17 @@ struct tx *tx_init(struct module *parent, unsigned mtu, enum tx_media_type media
                 tx->thread_count = static_cast<unsigned int>(thread_count);
                 LOG(LOG_LEVEL_INFO) << "The encoder thread count has been set to: " << tx->thread_count << "\n";
             }
+        }
+
+        const char* videoFrameTarget = get_commandline_param("video-frame-target");
+        if(videoFrameTarget) {
+            uint64_t frameTarget = std::stoi(videoFrameTarget);
+            // Convert the target to nanoseconds.
+            tx->videoFrameTarget = frameTarget * 1000 * 1000;
+        }
+        else {
+            // Otherwise set to a default (zero will use 66% of the duration of the frame)
+            tx->videoFrameTarget = 0;
         }
 
         if (encryption) {
@@ -818,6 +848,25 @@ __attribute__((unused)) static long get_packet_rate(struct tx *tx, struct video_
         return packet_rate;
 }
 
+uint64_t calculateFrameTarget(struct tx* tx, struct video_frame* frame) {
+    // If we're not limiting the rate, then return 0.
+    switch(tx->bitrate) {
+        case RATE_UNLIMITED: {
+            return 0;
+        }
+        default: {
+            // Calculate the number of nanoseconds required for this frame to play
+            auto frameDuration = static_cast<uint64_t>(NANOSECOND / frame->fps);
+            // The sending of packets occurs once for each tile, so the target timing for sending the "frame"
+            // needs to be split per tile.
+            uint64_t frameTarget = (frameDuration / frame->tile_count);
+            // We cannot use the entire duration of the frame, as we need timing for other operations, but we
+            // could use up to 66% of the duration of the frame (28ms for a 24fps frame).
+            return (frameTarget / 3) * 2;
+        }
+    }
+}
+
 // static void tx_send_base(struct tx *tx, struct video_frame *frame, struct rtp *rtpSession,
 //                          uint32_t ts, int send_m, unsigned int substream, int fragment_offset)
 // {
@@ -1075,6 +1124,12 @@ static void tx_send_base(struct tx *tx, struct video_frame *frame, struct rtp *r
             rtpHeaderSize += sizeof(crypto_payload_hdr_t);
         }
 
+        // Calculate our packet timing. If zero, then it has not been set to a static value from
+        // the command line.
+        if(tx->videoFrameTarget == 0) {
+            tx->videoFrameTarget = calculateFrameTarget(tx, frame);
+        }
+
         // Calculate the size of all of the out-going packets. This varies based off of MTU, and FEC settings.
         // (Try and ensure FEC settings don't exceed the size of the MTU otherwise we'll get fragmented packets)
         vector<int> packetSizes = get_packet_sizes(frame, static_cast<int>(substream), tx->mtu - headersLen);
@@ -1125,7 +1180,7 @@ static void tx_send_base(struct tx *tx, struct video_frame *frame, struct rtp *r
             // Our thread pools allow per thread resources to be sent, so send encryption block
             (struct openssl_encrypt* encryption)
             {
-                tx_send_packets(tx, rtpSession, packetSizes, packetInfo, rtpHeader, static_cast<int>(rtpHeaderSize / sizeof(uint32_t)), blockBegin, blockSize, encryption);
+                tx_send_packets(tx, rtpSession, packetSizes, packetInfo, rtpHeader, static_cast<int>(rtpHeaderSize / sizeof(uint32_t)), blockBegin, blockSize, true, encryption);
             };
             tx->threadPool->QueueJob(job);
 
@@ -1158,12 +1213,12 @@ static void tx_send_base(struct tx *tx, struct video_frame *frame, struct rtp *r
         tx->threadPool->Stop();
 
         // Send the last packet
-        tx_send_packets(tx, rtpSession, packetSizes, packetInfo, rtpHeader, rtpHeaderSize / sizeof(uint32_t), packetCount - 1, 1, tx->threadPool->threadResources.at(0));
+        tx_send_packets(tx, rtpSession, packetSizes, packetInfo, rtpHeader, rtpHeaderSize / sizeof(uint32_t), packetCount - 1, 1, false, tx->threadPool->threadResources.at(0));
 
         // Measure the time it has taken to send the video packets, and then, if enough time has passed,
         // report on it.
         tx->videoTiming.measure();
-        tx->videoTiming.report(packetCount);
+        tx->videoTiming.report(packetCount, tx->videoFrameTarget);
 
         if (!tx->encryption) {
                 rtp_async_wait(rtpSession);
@@ -1171,11 +1226,22 @@ static void tx_send_base(struct tx *tx, struct video_frame *frame, struct rtp *r
 }
 
 void tx_send_packets(struct tx *tx, struct rtp *rtpSession, const std::vector<int>& packetSizes, const struct PacketInfo& packetInfo,
-                     const uint32_t* rtpHeader, int rtpHeaderLen, int startingPacket, int packetAmount, struct openssl_encrypt* encryption) {
+                     const uint32_t* rtpHeader, int rtpHeaderLen, int startingPacket, int packetAmount, bool packetPace, struct openssl_encrypt* encryption) {
     // Calculate the starting position this function will send packets from.
     size_t initialPos = 0;
     for(int i = 0; i < startingPacket; i++) {
         initialPos += packetSizes.at(i);
+    }
+
+    // If the video frame target is set to zero, then don't bother with the timing
+    if(tx->videoFrameTarget == 0) {
+        packetPace = false;
+    }
+
+    uint64_t packetDurationTarget = 0;
+    // Calculate the timing for each packet - Nanoseconds
+    if(packetAmount > 0) {
+        packetDurationTarget = tx->videoFrameTarget / packetAmount;
     }
 
     // Set up the variables we will use to send the packets
@@ -1184,8 +1250,16 @@ void tx_send_packets(struct tx *tx, struct rtp *rtpSession, const std::vector<in
     // Calculate how many duplicates should be sent
     int multCount = tx->fec_scheme == FEC_MULT ? tx->mult_count : 1;
 
+    // Get the timing from the beginning, so we can calculate if we're on target or not.
+    std::chrono::high_resolution_clock::time_point start = std::chrono::high_resolution_clock::now();
+    // Keep track of the total time spent pacing
+    std::chrono::duration idleDuration = std::chrono::nanoseconds(0);
+
     // Loop for each packet we are sending
     for(int packetIndex = startingPacket; packetIndex < startingPacket + packetAmount; packetIndex++) {
+        // Create a loop index to keep track of how many times this loop has occurred.
+        int loopIndex = packetIndex - startingPacket;
+
         // Create a unique header block for the packet and copy the rtp header block
         std::unique_ptr<uint32_t[]> rtpHeaderPacket = std::make_unique<uint32_t[]>(rtpHeaderLen);
         std::copy(rtpHeader, rtpHeader + rtpHeaderLen, rtpHeaderPacket.get());
@@ -1236,8 +1310,37 @@ void tx_send_packets(struct tx *tx, struct rtp *rtpSession, const std::vector<in
             }
         }
 
+        // If packet pacing is enabled, then we should compare the actual
+        // performance against our expected performance. If we are ahead
+        // we should wait until we're at our expected timing.
+        if(packetPace) {
+            // Get the time
+            std::chrono::high_resolution_clock::time_point sentTimePoint = std::chrono::high_resolution_clock::now();
+            // Calculate where we should be according to our target
+            std::chrono::duration targetDuration = std::chrono::nanoseconds(packetDurationTarget) * (loopIndex + 1);
+            std::chrono::high_resolution_clock::time_point target = start + targetDuration;
+            // Keep track of if we had to wait at all
+            bool waiting = false;
+            // Loop until we're on target
+            while(std::chrono::high_resolution_clock::now() < target) {
+                waiting = true;
+            }
+            // Add the duration spent waiting to the idle timer
+            if(waiting) {
+                idleDuration += (std::chrono::high_resolution_clock::now() - sentTimePoint);
+            }
+        }
+
         // Push forward the position by the amount of data we just sent
         pos += originalDataLen;
+    }
+
+    // If we spent any time waiting then log the total time spent idling to pace the packets
+    if(idleDuration != std::chrono::nanoseconds(0)) {
+        LOG(LOG_LEVEL_DEBUG) << MOD_NAME
+                             << "Total idle time: "
+                             << std::chrono::duration_cast<std::chrono::nanoseconds>(idleDuration).count()
+                             << "\n";
     }
 }
 
