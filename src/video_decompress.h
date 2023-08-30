@@ -54,13 +54,21 @@
 extern "C" {
 #endif
 
-struct state_decompress;
+/**
+ * This struct represents actual decompress state
+ */
+struct state_decompress {
+    uint32_t magic;             ///< selected decoder magic
+    const struct video_decompress_info *functions; ///< pointer to selected decoder functions
+    void *state;                ///< decoder driver state
+};
 
 /**
  * This property tells that even broken frame (with missing data)
  * can be passed to decompressor. Otherwise, broken frame is discarded.
  */
 #define DECOMPRESS_PROPERTY_ACCEPTS_CORRUPTED_FRAME  1          /* int */
+#define DECOMPRESS_MODULE_NAME                       2
 
 /**
  * initializes decompression and returns internal state
@@ -85,7 +93,9 @@ typedef enum {
         DECODER_NO_FRAME = 0, //Frame not decoded yet 
         DECODER_GOT_FRAME,    //Frame decoded and written to destination
         DECODER_GOT_CODEC,    ///< Internal pixel format was determined
-        DECODER_CANT_DECODE   //Decoder can't decode to selected out_codec
+        DECODER_CANT_DECODE,   //Decoder can't decode to selected out_codec
+        DECODER_PASSTHROUGH   // For instances where a different thread takes
+                              // responsibility for displaying the frame.
 } decompress_status;
 
 /**

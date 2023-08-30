@@ -363,26 +363,26 @@ int display_put_frame(struct display *d, struct video_frame *frame, long long ti
         assert(d->magic == DISPLAY_MAGIC);
 
         if (!frame) {
-                return d->funcs->putf(d->state, frame, timeout_ns);
+            return d->funcs->putf(d->state, frame, timeout_ns);
         }
 
         if (d->postprocess) {
-                int display_ret = 0;
-		for (int i = 0; i < d->pp_output_frames_count; ++i) {
-			struct video_frame *display_frame = d->funcs->getf(d->state);
-			int ret = vo_postprocess(d->postprocess,
-					frame,
-					display_frame,
-					d->display_pitch);
-                        frame = NULL;
-			if (!ret) {
-				d->funcs->putf(d->state, display_frame, PUTF_DISCARD);
-				return 1;
-			}
+            int display_ret = 0;
+            for (int i = 0; i < d->pp_output_frames_count; ++i) {
+                struct video_frame *display_frame = d->funcs->getf(d->state);
+                int ret = vo_postprocess(d->postprocess,
+                        frame,
+                        display_frame,
+                        d->display_pitch);
+                            frame = NULL;
+                if (!ret) {
+                    d->funcs->putf(d->state, display_frame, PUTF_DISCARD);
+                    return 1;
+                }
 
-			display_ret = d->funcs->putf(d->state, display_frame, timeout_ns);
-		}
-                return display_ret;
+                display_ret = d->funcs->putf(d->state, display_frame, timeout_ns);
+            }
+            return display_ret;
         }
         int ret = d->funcs->putf(d->state, frame, timeout_ns);
         if (ret != 0 || !d->funcs->generic_fps_indicator_prefix) {

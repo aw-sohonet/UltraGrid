@@ -61,52 +61,8 @@
 #include "config_unix.h"
 #include "config_win32.h"
 #endif // HAVE_CONFIG_H
-#include "debug.h"
-#include "host.h"
-#include "lib_common.h"
-#include "utils/misc.h"
-#include "video.h"
-#include "video_decompress.h"
-
-#include <cmpto_j2k_dec.h>
-
-#include <mutex>
-#include <queue>
-#include <utility>
-
-constexpr const int DEFAULT_TILE_LIMIT = 1;
-/// maximal size of queue for decompressed frames
-constexpr const int DEFAULT_MAX_QUEUE_SIZE = 2;
-/// maximal number of concurrently decompressed frames
-constexpr const int DEFAULT_MAX_IN_FRAMES = 4;
-constexpr const int64_t DEFAULT_MEM_LIMIT = 1000000000LL;
-constexpr const char *MOD_NAME = "[J2K dec.] ";
-
-using namespace std;
-
-struct state_decompress_j2k {
-        state_decompress_j2k(unsigned int mqs, unsigned int mif)
-                : max_queue_size(mqs), max_in_frames(mif) {}
-        cmpto_j2k_dec_ctx *decoder{};
-        cmpto_j2k_dec_cfg *settings{};
-
-        struct video_desc desc{};
-        codec_t out_codec{};
-
-        mutex lock;
-        queue<pair<char *, size_t>> decompressed_frames; ///< buffer, length
-        int pitch;
-        pthread_t thread_id{};
-        unsigned int max_queue_size; ///< maximal length of @ref decompressed_frames
-        unsigned int max_in_frames; ///< maximal frames that can be "in progress"
-        unsigned int in_frames{}; ///< actual number of decompressed frames
-
-        unsigned long long int dropped{}; ///< number of dropped frames because queue was full
-
-        void (*convert)(unsigned char *dst_buffer,
-                unsigned char *src_buffer,
-                unsigned int width, unsigned int height){nullptr};
-};
+#include "video_decompress/cmpto_j2k.h"
+#include "utils/thread.h"
 
 #define CHECK_OK(cmd, err_msg, action_fail) do { \
         int j2k_error = cmd; \
@@ -139,58 +95,75 @@ static void rg48_to_r12l(unsigned char *dst_buffer,
  */
 static void *decompress_j2k_worker(void *args)
 {
-        struct state_decompress_j2k *s =
-                (struct state_decompress_j2k *) args;
+        set_thread_name(__func__);
+        auto s = (struct state_decompress_j2k *) args;
 
         while (true) {
-next_image:
+                // Create an empty pointer on the stack to collect the image data
                 struct cmpto_j2k_dec_img *img;
+                // Collect the status from the J2K sdk on whether we collected the image or not.
                 int decoded_img_status;
+                // Attempt to collect the image from the decoder. If that fails, then loop until it collects it
                 CHECK_OK(cmpto_j2k_dec_ctx_get_decoded_img(s->decoder, 1, &img, &decoded_img_status),
-				"Decode image", goto next_image);
+				"Decode image", continue);
 
+                // If we get this far then we have successfully received the image from the decoder, so we can mark
+                // the frame as having been removed from the decoder.
                 {
-                        lock_guard<mutex> lk(s->lock);
+                        std::lock_guard<std::mutex> lk(s->lock);
                         if (s->in_frames) s->in_frames--;
                 }
 
-                if (img == NULL) { // decoder stopped (poison pill)
+                // Decoder stopped (poison pill)
+                if (img == NULL) { 
                         break;
                 }
 
+                // Do some error handling if the decoder did not output the image correctly
                 if (decoded_img_status != CMPTO_J2K_DEC_IMG_OK) {
-			const char * decoding_error = "";
-			CHECK_OK(cmpto_j2k_dec_img_get_error(img, &decoding_error), "get error status",
-					decoding_error = "(failed)");
-			log_msg(LOG_LEVEL_ERROR, "Image decoding failed: %s\n", decoding_error);
-                        continue;
+                    // Capture and display the error from J2K sdk
+			        const char* decoding_error;
+			        CHECK_OK(cmpto_j2k_dec_img_get_error(img, &decoding_error), "get error status", decoding_error = "(failed)");
+			        log_msg(LOG_LEVEL_ERROR, "Image decoding failed: %s\n", decoding_error);
+                    continue;
                 }
 
                 void *dec_data;
                 size_t len;
-                CHECK_OK(cmpto_j2k_dec_img_get_samples(img, &dec_data, &len),
-                                "Error getting samples", cmpto_j2k_dec_img_destroy(img); goto next_image);
+                // Pull the decoded image data from the J2K sdk. If there is an error destroy the img object and loop again
+                CHECK_OK(cmpto_j2k_dec_img_get_samples(img, &dec_data, &len), "Error getting samples", cmpto_j2k_dec_img_destroy(img); continue);
 
+                // Allocate the buffer from the heap as this will be passed back to the main loop
                 char *buffer = (char *) malloc(len);
+                // If there is a conversion associated with the video format then apply the conversion into the buffer
                 if (s->convert) {
-                        s->convert((unsigned char*) buffer, (unsigned char*) dec_data, s->desc.width, s->desc.height);
-                        len = vc_get_linesize(s->desc.width, s->out_codec) * s->desc.height;
-                } else {
-                        memcpy(buffer, dec_data, len);
+                    // Apply the conversion and then fetch the new length of the data
+                    s->convert((unsigned char*) buffer, (unsigned char*) dec_data, s->desc.width, s->desc.height);
+                    len = vc_get_linesize(s->desc.width, s->out_codec) * s->desc.height;
+                }
+                // Copy the decoded data directly into the buffer
+                else {
+                    memcpy(buffer, dec_data, len);
                 }
 
-                CHECK_OK(cmpto_j2k_dec_img_destroy(img),
-                                "Unable to to return processed image", NOOP);
-                lock_guard<mutex> lk(s->lock);
-                while (s->decompressed_frames.size() >= s->max_queue_size) {
-                        if (s->dropped++ % 10 == 0) {
-                                log_msg(LOG_LEVEL_WARNING, "[J2K dec] Some frames (%llu) dropped.\n", s->dropped);
+                // Destroy the img object that was fetched from the J2K sdk
+                CHECK_OK(cmpto_j2k_dec_img_destroy(img), "Unable to to return processed image", NOOP);
 
-                        }
-                        auto decoded = s->decompressed_frames.front();
-                        s->decompressed_frames.pop();
-                        free(decoded.first);
-                }
+                // Fetch the lock for the decompression queue
+//                std::lock_guard<std::mutex> lk(s->lock);
+//                // Check if the decompression queue is larger than the max size
+//                while (s->decompressed_frames.size() >= s->max_queue_size) {
+//                        // Report every 10 frames dropped
+//                        if((s->dropped > 0) && (++(s->dropped) % 10 == 0)) {
+//                            LOG(LOG_LEVEL_WARNING) << "[J2K dec] Some frames (" << s->dropped << ") dropped.\n";
+//                        }
+//
+//                        // If the queue is too big, then pop off the front of the queue and drop the frame
+//                        auto decoded = s->decompressed_frames.front();
+//                        s->decompressed_frames.pop();
+//                        free(decoded.first);
+//                }
+                // Push into the queue before fetching the next frame
                 s->decompressed_frames.push({buffer,len});
         }
 
@@ -242,8 +215,7 @@ static void * j2k_decompress_init(void)
                                 "Error setting CUDA device", goto error);
         }
 
-        CHECK_OK(cmpto_j2k_dec_ctx_create(ctx_cfg, &s->decoder), "Error initializing context",
-                        goto error);
+        CHECK_OK(cmpto_j2k_dec_ctx_create(ctx_cfg, &s->decoder), "Error initializing context", goto error);
 
         CHECK_OK(cmpto_j2k_dec_ctx_cfg_destroy(ctx_cfg), "Destroy cfg", NOOP);
 
@@ -256,9 +228,6 @@ static void * j2k_decompress_init(void)
         return s;
 
 error:
-        if (!s) {
-                return NULL;
-        }
         if (s->settings) {
                 cmpto_j2k_dec_cfg_destroy(s->settings);
         }
@@ -343,6 +312,14 @@ static int j2k_decompress_reconfigure(void *state, struct video_desc desc,
                                 "Error setting sample format", return false);
         }
 
+        while (s->decompressed_frames.size() > 0) {
+                auto decoded = s->decompressed_frames.pop();
+                free(decoded.first);
+        }
+
+        // Push a poison pill
+        s->decompressed_frames.push(std::make_pair<char*, int>(nullptr, 0));
+
         s->desc = desc;
         s->out_codec = out_codec;
         s->pitch = pitch;
@@ -384,6 +361,52 @@ static decompress_status j2k_probe_internal_codec(codec_t in_codec, unsigned cha
         return DECODER_GOT_CODEC;
 }
 
+static decompress_status j2k_decompress_passthrough(void *state, unsigned char *dst, unsigned char *buffer,
+                                                    unsigned int src_len, int /* frame_seq */,
+                                                    struct video_frame_callbacks * /* callbacks */,
+                                                    codec_t *internal_codec)
+{
+    auto s = static_cast<state_decompress_j2k*>(state);
+    struct cmpto_j2k_dec_img *img;
+    std::pair<char *, size_t> decoded;
+    void *tmp;
+
+    // Identify the decoder settings so that we can reconfigure the decoder.
+    if (s->out_codec == VIDEO_CODEC_NONE) {
+        return j2k_probe_internal_codec(s->desc.color_spec, buffer, src_len, internal_codec);
+    }
+
+    // If we have too many frames "in-flight" then drop the frame
+    if (s->in_frames >= s->max_in_frames + 1) {
+        if (s->dropped++ % 10 == 0) {
+            log_msg(LOG_LEVEL_WARNING, "[J2K dec] Some frames (%llu) dropped.\n", s->dropped);
+
+        }
+        goto return_empty;
+    }
+
+    // Create the image object to store the data for decompression
+    CHECK_OK(cmpto_j2k_dec_img_create(s->decoder, &img), "Could not create frame", goto return_empty);
+
+    // Copy the buffer into a temporary buffer ready for decompression
+    tmp = malloc(src_len);
+    memcpy(tmp, buffer, src_len);
+    // Set up the cstream in the J2K decoder
+    CHECK_OK(cmpto_j2k_dec_img_set_cstream(img, tmp, src_len, &release_cstream),
+             "Error setting cstream", cmpto_j2k_dec_img_destroy(img); goto return_empty);
+
+    // Insert the image for decoding.
+    CHECK_OK(cmpto_j2k_dec_img_decode(img, s->settings), "Decode image",
+             cmpto_j2k_dec_img_destroy(img); goto return_empty);
+    {
+        std::lock_guard<std::mutex> lk(s->lock);
+        s->in_frames++;
+    }
+
+return_empty:
+    return DECODER_PASSTHROUGH;
+}
+
 /**
  * Main decompress function - passes frame to the codec and checks if there are
  * some decoded frames. If so, copies that to framebuffer. In the opposite case
@@ -395,7 +418,7 @@ static decompress_status j2k_decompress(void *state, unsigned char *dst, unsigne
         struct state_decompress_j2k *s =
                 (struct state_decompress_j2k *) state;
         struct cmpto_j2k_dec_img *img;
-        pair<char *, size_t> decoded;
+        std::pair<char *, size_t> decoded;
         void *tmp;
 
         if (s->out_codec == VIDEO_CODEC_NONE) {
@@ -421,17 +444,16 @@ static decompress_status j2k_decompress(void *state, unsigned char *dst, unsigne
         CHECK_OK(cmpto_j2k_dec_img_decode(img, s->settings), "Decode image",
                         cmpto_j2k_dec_img_destroy(img); goto return_previous);
         {
-                lock_guard<mutex> lk(s->lock);
+                std::lock_guard<std::mutex> lk(s->lock);
                 s->in_frames++;
         }
 
 return_previous:
-        unique_lock<mutex> lk(s->lock);
+        std::unique_lock<std::mutex> lk(s->lock);
         if (s->decompressed_frames.size() == 0) {
                 return DECODER_NO_FRAME;
         }
-        decoded = s->decompressed_frames.front();
-        s->decompressed_frames.pop();
+        decoded = s->decompressed_frames.pop();
         lk.unlock();
 
         size_t linesize = vc_get_linesize(s->desc.width, s->out_codec);
@@ -441,7 +463,7 @@ return_previous:
         }
 
         for (size_t i = 0; i < s->desc.height; ++i) {
-                memcpy(dst + i * s->pitch, decoded.first + i * linesize, min(linesize, decoded.second - min(decoded.second, i * linesize)));
+                memcpy(dst + i * s->pitch, decoded.first + i * linesize, std::min(linesize, decoded.second - std::min(decoded.second, i * linesize)));
         }
 
         free(decoded.first);
@@ -462,6 +484,11 @@ static int j2k_decompress_get_property(void *state, int property, void *val, siz
                                 ret = true;
                         }
                         break;
+                case DECOMPRESS_MODULE_NAME: {
+                    strcpy(static_cast<char*>(val), "J2K");
+                    ret = true;
+                    break;
+                }
                 default:
                         ret = false;
         }
@@ -469,7 +496,7 @@ static int j2k_decompress_get_property(void *state, int property, void *val, siz
         return ret;
 }
 
-static void j2k_decompress_done(void *state)
+static void  j2k_decompress_done(void *state)
 {
         struct state_decompress_j2k *s = (struct state_decompress_j2k *) state;
 
@@ -481,10 +508,12 @@ static void j2k_decompress_done(void *state)
         cmpto_j2k_dec_ctx_destroy(s->decoder);
 
         while (s->decompressed_frames.size() > 0) {
-                auto decoded = s->decompressed_frames.front();
-                s->decompressed_frames.pop();
+                auto decoded = s->decompressed_frames.pop();
                 free(decoded.first);
         }
+
+        // Push a poison pill
+        s->decompressed_frames.push(std::make_pair<char*, int>(nullptr, 0));
 
         delete s;
 }
@@ -518,7 +547,7 @@ static const struct decode_from_to *j2k_decompress_get_decoders() {
 static const struct video_decompress_info j2k_decompress_info = {
         j2k_decompress_init,
         j2k_decompress_reconfigure,
-        j2k_decompress,
+        j2k_decompress_passthrough,
         j2k_decompress_get_property,
         j2k_decompress_done,
         j2k_decompress_get_decoders,

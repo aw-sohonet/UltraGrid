@@ -101,6 +101,7 @@
 #include "compat/platform_time.h"
 #include "control_socket.h"
 #include "crypto/openssl_decrypt.h"
+#include "video_decompress/cmpto_j2k.h"
 #include "debug.h"
 #include "host.h"
 #include "lib_common.h"
@@ -335,8 +336,8 @@ struct state_video_decoder
         struct module mod;
         struct control_state *control = {};
 
-        thread decompress_thread_id,
-                  fec_thread_id;
+        thread decompress_thread_id, fec_thread_id, display_thread_id, decompress_thread_collection_id;
+
         struct video_desc received_vid_desc = {}; ///< description of the network video
         struct video_desc display_desc = {};      ///< description of the mode that display is currently configured to
 
@@ -364,12 +365,11 @@ struct state_video_decoder
                               * has been processed and we can write to a new one */
         condition_variable buffer_swapped_cv; ///< condition variable associated with @ref buffer_swapped
 
+        synchronized_queue<unique_ptr<frame_msg>, 1> fec_queue;
         synchronized_queue<unique_ptr<frame_msg>, 1> decompress_queue;
 
         codec_t           out_codec = VIDEO_CODEC_NONE;
         int               pitch = 0;
-
-        synchronized_queue<unique_ptr<frame_msg>, 1> fec_queue;
 
         enum video_mode   video_mode = {} ;  ///< video mode set for this decoder
         bool          merged_fb = false; ///< flag if the display device driver requires tiled video or not
@@ -382,6 +382,11 @@ struct state_video_decoder
         struct openssl_decrypt      *decrypt = NULL; ///< decrypt state
         std::vector<openssl_decrypt*> decryption_resources;
         unsigned int thread_count;
+
+        std::condition_variable displayCv;
+        std::mutex displayMutex;
+        std::atomic<bool> displayReady;
+        std::atomic<bool> stopDisplay;
 
 #ifdef RECONFIGURE_IN_FUTURE_THREAD
         std::future<bool> reconfiguration_future;
@@ -600,6 +605,38 @@ static void *decompress_worker(void *data)
         return d;
 }
 
+/**
+ * This function will notify the display thread that a frame is available for display. After
+ * it has notified the display thread about the availability it will block until the display
+ * is complete (and therefore freeing up the buffer).
+ *
+ * @param decoder A pointer to the decoder state object.
+ */
+void notifyDisplayThreadAndBlock(state_video_decoder* decoder) {
+    std::unique_lock lock = std::unique_lock(decoder->displayMutex);
+    // Mark from the decoder that the frame is ready for display
+    decoder->displayReady.store(true);
+    // Notifiy the display thread
+    decoder->displayCv.notify_one();
+    // Wait for the display thread to mark that it has successfully completed the display.
+    decoder->displayCv.wait(lock, [decoder]{return !decoder->displayReady.load();});
+}
+
+/**
+ * A function for marking the buffer as being swapped. This is primarily related to the frame attached
+ * to the decoder state.
+ *
+ * @param decoder A pointer to the decoder state object.
+ */
+void notifyBufferSwap(state_video_decoder* decoder) {
+    unique_lock<mutex> lk(decoder->lock);
+    // We have put the video frame and requested another one which is
+    // writable so on
+    decoder->buffer_swapped = true;
+    lk.unlock();
+    decoder->buffer_swapped_cv.notify_one();
+}
+
 ADD_TO_PARAM("decoder-drop-policy",
                 "* decoder-drop-policy=blocking|nonblock|<sec>\n"
                 "  Force specified blocking policy (default nonblock).\n"
@@ -631,7 +668,14 @@ static void *decompress_thread(void *args) {
                 unique_ptr<frame_msg> msg = decoder->decompress_queue.pop();
 
                 if(!msg->recv_frame) { // poisoned
-                        break;
+                    // Mark it so that the display thread stops
+                    {
+                        std::unique_lock lock = std::unique_lock(decoder->displayMutex);
+                        decoder->stopDisplay.store(true);
+                        // Wake up the display thread
+                        decoder->displayCv.notify_one();
+                    }
+                    break;
                 }
 
                 auto t0 = std::chrono::high_resolution_clock::now();
@@ -653,26 +697,29 @@ static void *decompress_thread(void *args) {
                                 data[pos].buffer_num = msg->buffer_num[pos];
                                 if (tmp.get()) {
                                         data[pos].out = (unsigned char *) tmp.get();
-                                } else if (decoder->merged_fb) {
+                                }
+                                else if (decoder->merged_fb) {
                                         // TODO: OK when rendering directly to display FB, otherwise, do not reflect pitch (we use PP)
                                         int x = pos % get_video_mode_tiles_x(decoder->video_mode),
                                             y = pos / get_video_mode_tiles_x(decoder->video_mode);
-                                        data[pos].out = (unsigned char *) vf_get_tile(decoder->frame, 0)->data + y * decoder->pitch * tile_height +
-                                                vc_get_linesize(tile_width, decoder->out_codec) * x;
+                                        data[pos].out = (unsigned char *) vf_get_tile(decoder->frame, 0)->data + (y * decoder->pitch * tile_height) + (vc_get_linesize(tile_width, decoder->out_codec) * x);
                                 } else {
                                         data[pos].out = (unsigned char *) vf_get_tile(decoder->frame, pos)->data;
                                 }
+
                                 if (tile_count > 1) {
                                         handle[pos] = task_run_async(decompress_worker, &data[pos]);
                                 } else {
                                         decompress_worker(&data[pos]);
                                 }
                         }
+
                         if (tile_count > 1) {
                                 for (int pos = 0; pos < tile_count; ++pos) {
                                         wait_task(handle[pos]);
                                 }
                         }
+
                         for (int pos = 0; pos < tile_count; ++pos) {
                                 if (data[pos].ret == DECODER_GOT_CODEC) {
                                         LOG(LOG_LEVEL_NOTICE) << MOD_NAME << "Detected internal codec: " << get_codec_name(data[pos].internal_codec) << "\n";
@@ -683,6 +730,11 @@ static void *decompress_thread(void *args) {
                                         if (data[pos].ret == DECODER_CANT_DECODE){
                                                 if(blacklist_current_out_codec(decoder))
                                                         decoder->msg_queue.push(new main_msg_reconfigure(decoder->received_vid_desc, nullptr, true));
+                                        }
+                                        // If we have the decoder passthrough then skip and wait for the next frame
+                                        // as another thread is gaining responsibility for displaying the frame.
+                                        else if(data[pos].ret == DECODER_PASSTHROUGH) {
+                                            goto passthrough;
                                         }
                                         goto skip_frame;
                                 }
@@ -699,35 +751,107 @@ static void *decompress_thread(void *args) {
                         duration_cast<nanoseconds>(high_resolution_clock::now() - t0).count() / 1000000.0 << " ms\n";
 
                 if(decoder->change_il) {
-                        for(unsigned int i = 0; i < decoder->frame->tile_count; ++i) {
-                                struct tile *tile = vf_get_tile(decoder->frame, i);
-                                decoder->change_il(tile->data, tile->data, vc_get_linesize(tile->width,
-                                                        decoder->out_codec), tile->height, &decoder->change_il_state[i]);
-                        }
+                    for (unsigned int i = 0; i < decoder->frame->tile_count; ++i) {
+                        struct tile *tile = vf_get_tile(decoder->frame, i);
+                        decoder->change_il(tile->data, tile->data, vc_get_linesize(tile->width,
+                                                                                   decoder->out_codec), tile->height,
+                                           &decoder->change_il_state[i]);
+                    }
                 }
 
-                {
-                        long long putf_timeout = force_putf_timeout != -1 ? force_putf_timeout : PUTF_NONBLOCK; // originally was BLOCKING when !is_codec_interframe(decoder->received_vid_desc.color_spec)
-
-                        decoder->frame->ssrc = msg->nofec_frame->ssrc;
-                        int ret = display_put_frame(decoder->display,
-                                        decoder->frame, putf_timeout);
-                        msg->is_displayed = ret == 0;
-                        decoder->frame = display_get_frame(decoder->display);
-                }
+            // Display the latest frame, by notifying the display thread that a frame awaits it
+//            notifyDisplayThreadAndBlock(decoder);
 
 skip_frame:
-                {
-                        unique_lock<mutex> lk(decoder->lock);
-                        // we have put the video frame and requested another one which is
-                        // writable so on
-                        decoder->buffer_swapped = true;
-                        lk.unlock();
-                        decoder->buffer_swapped_cv.notify_one();
-                }
+            // Mark the buffer as being swapped so other threads can continue
+            notifyBufferSwap(decoder);
+passthrough:
+            continue;
         }
 
         return NULL;
+}
+
+long long get_putf_timeout() {
+    auto drop_policy = commandline_params.find("decoder-drop-policy"s);
+    if (drop_policy == commandline_params.end()) {
+        return -1LL;
+    }
+    if (drop_policy->second == "nonblock") {
+        return PUTF_NONBLOCK;
+    }
+    if (drop_policy->second == "blocking") {
+        return PUTF_BLOCKING;
+    }
+    return static_cast<long long>(unit_evaluate_dbl(drop_policy->second.c_str(), true) * NS_IN_SEC);
+}
+
+static void j2k_collection_thread(void* args) {
+    set_thread_name(__func__);
+    auto decoder = static_cast<struct state_video_decoder *>(args);
+    auto decompressState = static_cast<state_decompress_j2k*>(decoder->decompress_state.at(0)->state);
+
+    // Empty the queue before processing in case there is a poisoned frame
+    while(decompressState->decompressed_frames.size() > 0) {
+            decompressState->decompressed_frames.pop();
+    }
+
+    while(true) {
+        std::pair<char *, size_t> decoded = decompressState->decompressed_frames.pop();
+
+        // Check if the queue has been poisoned
+        if(decoded.first == nullptr) {
+            break;
+        }
+
+        auto dst = (unsigned char *) vf_get_tile(decoder->frame, 0)->data;
+        size_t linesize = vc_get_linesize(decompressState->desc.width, decompressState->out_codec);
+        size_t frame_size = linesize * decompressState->desc.height;
+        if ((decoded.second + 3) / 4 * 4 != frame_size) { // for "RGBA with non-standard shift" (search) it would be (frame_size - 1)
+            LOG(LOG_LEVEL_WARNING) << MOD_NAME << "Incorrect decoded size (" << frame_size << " vs. " << decoded.second << ")\n";
+        }
+
+        for (size_t i = 0; i < decompressState->desc.height; ++i) {
+            memcpy(dst + i * decompressState->pitch, decoded.first + i * linesize, min(linesize, decoded.second - min(decoded.second, i * linesize)));
+        }
+
+        free(decoded.first);
+
+        // Display the latest frame, by notifying the display thread that a frame awaits it
+        notifyDisplayThreadAndBlock(decoder);
+    }
+}
+
+static void* display_thread(void *args) {
+    set_thread_name(__func__);
+    auto decoder = static_cast<struct state_video_decoder *>(args);
+
+    // Originally was BLOCKING when !is_codec_interframe(decoder->received_vid_desc.color_spec)
+    long long force_putf_timeout = get_putf_timeout();
+    long long putf_timeout = force_putf_timeout != -1 ? force_putf_timeout : PUTF_NONBLOCK;
+
+    // Until the decompress thread marks this to stop, continue running
+    while(true) {
+        std::unique_lock lock = std::unique_lock(decoder->displayMutex);
+        // Wait for the decoder to mark that the frame is ready for display
+        decoder->displayCv.wait(lock, [decoder]{return decoder->displayReady.load() || decoder->stopDisplay.load();});
+
+        // If the display has been stopped, break
+        if(decoder->stopDisplay.load()) {
+            break;
+        }
+
+        // Display the frame
+        display_put_frame(decoder->display, decoder->frame, putf_timeout);
+        // Get a new frame
+        decoder->frame = display_get_frame(decoder->display);
+        // Mark the display as being complete, and release the lock
+        decoder->displayReady.store(false);
+        // Let the decompress thread know the frame has been updated!
+        decoder->displayCv.notify_one();
+    }
+
+    return nullptr;
 }
 
 static void decoder_set_video_mode(struct state_video_decoder *decoder, enum video_mode video_mode)
@@ -774,6 +898,12 @@ struct state_video_decoder *video_decoder_init(struct module *parent,
                         return NULL;
                 }
         }
+
+
+    // Set the initial values on the display being ready
+    // and whether the display thread should be running or not
+    s->displayReady = false;
+    s->stopDisplay = false;
 
     // Have the thread count be configurable via a parameter. Otherwise, default to the
     // full amount of available threads.
@@ -828,8 +958,12 @@ static void video_decoder_start_threads(struct state_video_decoder *decoder)
 {
         assert(decoder->display); // we want to run threads only if decoder is active
 
+        // Ensure the display thread continues to run
+        decoder->stopDisplay = false;
+
         decoder->decompress_thread_id = thread(decompress_thread, decoder);
         decoder->fec_thread_id = thread(fec_thread, decoder);
+        decoder->display_thread_id = thread(display_thread, decoder);
 }
 
 /**
@@ -847,6 +981,7 @@ static void video_decoder_stop_threads(struct state_video_decoder *decoder)
 
         decoder->fec_thread_id.join();
         decoder->decompress_thread_id.join();
+        decoder->display_thread_id.join();
 }
 
 static auto codec_list_to_str(vector<codec_t> const &codecs) {
@@ -1144,6 +1279,7 @@ after_linedecoder_lookup:
                         bool supports_autodetection = decompress_init_multi(desc.color_spec,
                                         VIDEO_CODEC_NONE, VIDEO_CODEC_NONE, decoder->decompress_state.data(),
                                         decoder->decompress_state.size());
+
                         if (supports_autodetection) {
                                 decoder->decoder_type = EXTERNAL_DECODER;
                                 return VIDEO_CODEC_END;
@@ -1245,6 +1381,8 @@ static bool reconfigure_decoder(struct state_video_decoder *decoder,
         if (decoder->frame)
                 display_put_frame(decoder->display, decoder->frame, PUTF_DISCARD);
         decoder->frame = NULL;
+        // Reset the display ready to be false;
+        decoder->displayReady = false;
         video_decoder_start_threads(decoder);
 
         cleanup(decoder);
@@ -1402,6 +1540,20 @@ static bool reconfigure_decoder(struct state_video_decoder *decoder,
                                         display_requested_rgb_shift[2],
                                         decoder->pitch,
                                         out_codec == VIDEO_CODEC_END ? VIDEO_CODEC_NONE : out_codec);
+
+                        char property[20];
+                        size_t propertyLen = 20;
+                        if(!decoder->decompress_state.empty() && decoder->decompress_state.at(i)->functions->get_property(decoder->decompress_state.at(i)->state, DECOMPRESS_MODULE_NAME, property, &propertyLen)) {
+                                auto moduleName = std::string(property);
+                                if(moduleName == "J2K") {
+                                        // Launch collection thread
+                                        if(decoder->decompress_thread_collection_id.joinable()) {
+                                                decoder->decompress_thread_collection_id.join();
+                                        }
+                                        decoder->decompress_thread_collection_id = thread(j2k_collection_thread, decoder);
+                                }
+                        }
+
                         if(!buf_size) {
                                 return false;
                         }

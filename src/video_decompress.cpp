@@ -53,15 +53,6 @@
 
 using std::string;
 
-/**
- * This struct represents actual decompress state
- */
-struct state_decompress {
-        uint32_t magic;             ///< selected decoder magic
-        const struct video_decompress_info *functions; ///< pointer to selected decoder functions
-        void *state;                ///< decoder driver state
-};
-
 ADD_TO_PARAM("decompress", "* decompress=<name>[:<codec>]\n"
                 "  Forces specified decompress module (will fail if not able to decompress\n"
                 "   the received compression). Optionally also force codec to decode to."
