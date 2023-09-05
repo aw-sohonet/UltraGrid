@@ -68,10 +68,11 @@ struct tile;
 extern "C" {
 #endif // __cplusplus
 
-bool decode_video_frame(std::unique_ptr<BufferFrame> bufferFrame, vcodec_state* playoutBufState, PlayoutBufferStats stats);
+bool
+decode_video_frame(std::unique_ptr<BufferFrame> bufferFrame, vcodec_state *playoutBufState, PlayoutBufferStats stats);
 
 struct state_video_decoder *video_decoder_init(struct module *parent, enum video_mode,
-                struct display *display, const char *encryption);
+                                               struct display *display, const char *encryption);
 void video_decoder_destroy(struct state_video_decoder *decoder);
 bool video_decoder_register_display(struct state_video_decoder *decoder, struct display *display);
 void video_decoder_remove_display(struct state_video_decoder *decoder);
@@ -81,7 +82,7 @@ bool parse_video_hdr(uint32_t *hdr, struct video_desc *desc);
 
 // used also by hd_rum_translator
 bool init_decompress(codec_t in_codec, codec_t out_codec,
-                struct state_decompress **state, int state_count);
+                     struct state_decompress **state, int state_count);
 
 #ifdef __cplusplus
 }

@@ -163,7 +163,7 @@ void vf_data_deleter(struct video_frame *buf)
 
 struct tile * vf_get_tile(struct video_frame *buf, int pos)
 {
-        assert ((unsigned int) pos < buf->tile_count);
+        assert((unsigned int) pos < buf->tile_count);
 
         return &buf->tiles[pos];
 }

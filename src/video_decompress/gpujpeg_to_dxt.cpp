@@ -180,7 +180,7 @@ static void *worker_thread(void *arg)
         return NULL;
 }
 
-static void * gpujpeg_to_dxt_decompress_init(void)
+static void * gpujpeg_to_dxt_decompress_init(void* _)
 {
         struct state_decompresss_gpujpeg_to_dxt *s;
 

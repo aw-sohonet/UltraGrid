@@ -107,7 +107,7 @@ static int configure_with(struct state_decompress_rtdxt *decompressor, struct vi
         return TRUE;
 }
 
-static void * dxt_glsl_decompress_init(void)
+static void * dxt_glsl_decompress_init(void* _)
 {
         struct state_decompress_rtdxt *s;
         

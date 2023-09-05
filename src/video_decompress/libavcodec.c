@@ -396,7 +396,7 @@ static bool configure_with(struct state_libavcodec_decompress *s,
         return true;
 }
 
-static void * libavcodec_decompress_init(void)
+static void * libavcodec_decompress_init(void* _)
 {
         struct state_libavcodec_decompress *s =
                 calloc(1, sizeof(struct state_libavcodec_decompress));

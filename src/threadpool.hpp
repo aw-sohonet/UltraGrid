@@ -18,6 +18,7 @@ class ThreadPool {
 public:
     explicit ThreadPool(std::vector<T> threadResources, int threadCount = -1);
     ThreadPool(const ThreadPool& threadpool);
+    ~ThreadPool();
     void Start();
     void QueueJob(const std::function<void(T)>& job);
     void Stop();
@@ -59,6 +60,12 @@ ThreadPool<T>::ThreadPool(const ThreadPool<T>& threadpool) : queueMutex(), mutex
     this->threadCount = threadpool.threadCount;
     this->threadResources = threadpool.threadResources;
     this->shouldTerminate = threadpool.shouldTerminate;
+}
+
+template <typename T>
+ThreadPool<T>::~ThreadPool() {
+    this->Stop();
+    while(this->Busy());
 }
 
 /**

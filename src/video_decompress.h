@@ -73,7 +73,7 @@ struct state_decompress {
 /**
  * initializes decompression and returns internal state
  */
-typedef  void *(*decompress_init_t)();
+typedef  void *(*decompress_init_t)(void* queue);
 /**
  * Recompresses decompression for specified video description
  * @param[in] desc      video description
@@ -182,7 +182,8 @@ bool decompress_init_multi(codec_t from,
                 codec_t internal,
                 codec_t to,
                 struct state_decompress **out,
-                int count);
+                int count,
+                void* display_queue);
 
 /** */
 int decompress_reconfigure(struct state_decompress *,

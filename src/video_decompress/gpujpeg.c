@@ -119,7 +119,7 @@ static int configure_with(struct state_decompress_gpujpeg *s, struct video_desc 
         return TRUE;
 }
 
-static void * gpujpeg_decompress_init(void)
+static void * gpujpeg_decompress_init(void* _)
 {
         if (gpujpeg_version() >> 8 != GPUJPEG_VERSION_INT >> 8) {
                 char ver_req[128] = "";
