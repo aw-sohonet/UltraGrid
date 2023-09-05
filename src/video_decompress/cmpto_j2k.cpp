@@ -187,6 +187,7 @@ static void *decompress_j2k_worker(void *args) {
 
         // Allocate a frame with a single tile (J2K only produces a single tile in this implementation).
         struct video_frame *frame = vf_alloc(1);
+        frame->callbacks.data_deleter = vf_data_deleter;
         vf_get_tile(frame, 0)->data = static_cast<char *>(malloc(len));
         vf_get_tile(frame, 0)->data_len = len;
 

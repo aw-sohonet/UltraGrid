@@ -668,6 +668,7 @@ static void *decompress_thread(void *args) {
         int tile_count = get_video_mode_tiles_x(decoder->video_mode) *
                          get_video_mode_tiles_y(decoder->video_mode);
         msg->display_frame = vf_alloc(msg->recv_frame->tile_count);
+        msg->display_frame->callbacks.data_deleter = vf_data_deleter;
         vector<struct decompress_data> decompress_data = vector<struct decompress_data>(tile_count);
 
         if(decoder->decoder_type == EXTERNAL_DECODER) {
