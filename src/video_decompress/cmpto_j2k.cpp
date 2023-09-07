@@ -35,20 +35,6 @@
  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 /**
- * @file
- * Some of the concepts are similar to encoder (eg. keeping limited number of
- * frames in decoder) so please refer to that file.
- *
- * Problematic part of following code is that UltraGrid decompress API is
- * synchronous only while the CMPTO J2K decoder is inherently asynchronous.
- * Threrefore the integration works in following fashion:
- * - there is a thread that waits for completed (decompressed) frames,
- *   if there is any, it put it in queue (or drop if full)
- * - when a new frame arives, j2k_decompress() passes it to decoder
- *   (which is asynchronous, thus non-blocking)
- * - then queue (filled by thread in first point) is checked - if it is
- *   non-empty, frame is copied to framebufffer. If not false is returned.
- *
  * @todo
  * Reconfiguration isn't entirely correct - on reconfigure, all frames
  * should be dropped and not copied to framebuffer. However this is usually
@@ -87,8 +73,8 @@ constexpr const char *MOD_NAME = "[J2K dec.] ";
 using namespace std;
 
 struct state_decompress_j2k {
-        state_decompress_j2k(unsigned int mqs, unsigned int mif)
-                : max_queue_size(mqs), max_in_frames(mif) {}
+        state_decompress_j2k(unsigned int mif)
+                : max_in_frames(mif) {}
         cmpto_j2k_dec_ctx *decoder{};
         cmpto_j2k_dec_cfg *settings{};
 
@@ -99,7 +85,6 @@ struct state_decompress_j2k {
         queue<pair<char *, size_t>> decompressed_frames; ///< buffer, length
         int pitch;
         pthread_t thread_id{};
-        unsigned int max_queue_size; ///< maximal length of @ref decompressed_frames
         unsigned int max_in_frames; ///< maximal frames that can be "in progress"
         unsigned int in_frames{}; ///< actual number of decompressed frames
 
@@ -207,8 +192,6 @@ ADD_TO_PARAM("j2k-dec-mem-limit", "* j2k-dec-mem-limit=<limit>\n"
                                 "  J2K max memory usage in bytes.\n");
 ADD_TO_PARAM("j2k-dec-tile-limit", "* j2k-dec-tile-limit=<limit>\n"
                                 "  number of tiles decoded at moment (less to reduce latency, more to increase performance, 0 unlimited)\n");
-ADD_TO_PARAM("j2k-dec-queue-len", "* j2k-queue-len=<len>\n"
-                                "  max queue len\n");
 ADD_TO_PARAM("j2k-dec-encoder-queue", "* j2k-encoder-queue=<len>\n"
                                 "  max number of frames held by encoder\n");
 static void * j2k_decompress_init(void)
@@ -216,7 +199,6 @@ static void * j2k_decompress_init(void)
         struct state_decompress_j2k *s = NULL;
         long long int mem_limit = DEFAULT_MEM_LIMIT;
         unsigned int tile_limit = DEFAULT_TILE_LIMIT;
-        unsigned int queue_len = DEFAULT_MAX_QUEUE_SIZE;
         unsigned int encoder_in_frames = DEFAULT_MAX_IN_FRAMES;
         int ret;
 
@@ -228,10 +210,6 @@ static void * j2k_decompress_init(void)
                 tile_limit = atoi(get_commandline_param("j2k-dec-tile-limit"));
         }
 
-        if (get_commandline_param("j2k-dec-queue-len")) {
-                queue_len = atoi(get_commandline_param("j2k-dec-queue-len"));
-        }
-
         if (get_commandline_param("j2k-dec-encoder-queue")) {
                 encoder_in_frames = atoi(get_commandline_param("j2k-dec-encoder-queue"));
         }
@@ -239,7 +217,7 @@ static void * j2k_decompress_init(void)
         const auto *version = cmpto_j2k_dec_get_version();
         LOG(LOG_LEVEL_INFO) << MOD_NAME << "Using codec version: " << (version == nullptr ? "(unknown)" : version->name) << "\n";
 
-        s = new state_decompress_j2k(queue_len, encoder_in_frames);
+        s = new state_decompress_j2k(encoder_in_frames);
 
         struct cmpto_j2k_dec_ctx_cfg *ctx_cfg;
         CHECK_OK(cmpto_j2k_dec_ctx_cfg_create(&ctx_cfg), "Error creating dec cfg", goto error);
@@ -390,69 +368,11 @@ static decompress_status j2k_probe_internal_codec(codec_t in_codec, unsigned cha
         return DECODER_GOT_CODEC;
 }
 
-/**
- * Main decompress function - passes frame to the codec and checks if there are
- * some decoded frames. If so, copies that to framebuffer. In the opposite case
- * it just returns false.
- */
-static decompress_status j2k_decompress(void *state, unsigned char *dst, unsigned char *buffer,
-                unsigned int src_len, int /* frame_seq */, struct video_frame_callbacks * /* callbacks */, codec_t *internal_codec)
+static decompress_status j2k_decompress(void *, unsigned char *, unsigned char *,
+                unsigned int, int, struct video_frame_callbacks *, codec_t *)
 {
-        struct state_decompress_j2k *s =
-                (struct state_decompress_j2k *) state;
-        struct cmpto_j2k_dec_img *img;
-        pair<char *, size_t> decoded;
-        void *tmp;
-
-        if (s->out_codec == VIDEO_CODEC_NONE) {
-                return j2k_probe_internal_codec(s->desc.color_spec, buffer, src_len, internal_codec);
-        }
-
-        if (s->in_frames >= s->max_in_frames + 1) {
-                if (s->dropped++ % 10 == 0) {
-                        log_msg(LOG_LEVEL_WARNING, "[J2K dec] Some frames (%llu) dropped.\n", s->dropped);
-
-                }
-                goto return_previous;
-        }
-
-        CHECK_OK(cmpto_j2k_dec_img_create(s->decoder, &img),
-                        "Could not create frame", goto return_previous);
-
-        tmp = malloc(src_len);
-        memcpy(tmp, buffer, src_len);
-        CHECK_OK(cmpto_j2k_dec_img_set_cstream(img, tmp, src_len, &release_cstream),
-                        "Error setting cstream", cmpto_j2k_dec_img_destroy(img); goto return_previous);
-
-        CHECK_OK(cmpto_j2k_dec_img_decode(img, s->settings), "Decode image",
-                        cmpto_j2k_dec_img_destroy(img); goto return_previous);
-        {
-                lock_guard<mutex> lk(s->lock);
-                s->in_frames++;
-        }
-
-return_previous:
-        unique_lock<mutex> lk(s->lock);
-        if (s->decompressed_frames.size() == 0) {
-                return DECODER_NO_FRAME;
-        }
-        decoded = s->decompressed_frames.front();
-        s->decompressed_frames.pop();
-        lk.unlock();
-
-        size_t linesize = vc_get_linesize(s->desc.width, s->out_codec);
-        size_t frame_size = linesize * s->desc.height;
-        if ((decoded.second + 3) / 4 * 4 != frame_size) { // for "RGBA with non-standard shift" (search) it would be (frame_size - 1)
-                LOG(LOG_LEVEL_WARNING) << MOD_NAME << "Incorrect decoded size (" << frame_size << " vs. " << decoded.second << ")\n";
-        }
-
-        for (size_t i = 0; i < s->desc.height; ++i) {
-                memcpy(dst + i * s->pitch, decoded.first + i * linesize, min(linesize, decoded.second - min(decoded.second, i * linesize)));
-        }
-
-        free(decoded.first);
-
-        return DECODER_GOT_FRAME;
+        LOG(LOG_LEVEL_ERROR) << "The J2K decompression module is asynchronous only";
+        return DECODER_ERROR;
 }
 
 static int j2k_decompress_get_property(void *state, int property, void *val, size_t *len)
@@ -533,11 +453,14 @@ static decompress_status j2k_decompress_empty_push(void *state, unsigned char *c
         pair<char *, size_t> decoded;
         void *tmp;
 
+        // Sent a notice saying there needs to be a reconfiguration completed if the video codecs don't match.
         if (s->out_codec == VIDEO_CODEC_NONE) {
                 return j2k_probe_internal_codec(s->desc.color_spec, compressed, compressed_len, internal_codec);
         }
 
+        // Don't let there be too many frames being processed by the decoder at once.
         if (s->in_frames >= s->max_in_frames + 1) {
+                // Only bother printing an error for every 10 frames this happens with.
                 if (s->dropped++ % 10 == 0) {
                         log_msg(LOG_LEVEL_WARNING, "[J2K dec] Some frames (%llu) dropped.\n", s->dropped);
 
@@ -545,19 +468,24 @@ static decompress_status j2k_decompress_empty_push(void *state, unsigned char *c
                 goto error;
         }
 
+        // Create the J2K img object
         CHECK_OK(cmpto_j2k_dec_img_create(s->decoder, &img), "Could not create frame", goto error);
 
+        // Allocate a temporary buffer, copy in the compressed buffer, and align it with the 
+        // settings the J2K decoder expects.
         tmp = malloc(compressed_len);
         memcpy(tmp, compressed, compressed_len);
         CHECK_OK(cmpto_j2k_dec_img_set_cstream(img, tmp, compressed_len, &release_cstream),
                         "Error setting cstream", cmpto_j2k_dec_img_destroy(img); goto error);
 
+        // Submit the frame to the decoder.
         CHECK_OK(cmpto_j2k_dec_img_decode(img, s->settings), "Decode image", cmpto_j2k_dec_img_destroy(img); goto error);
         {
                 lock_guard<mutex> lk(s->lock);
                 s->in_frames++;
         }
 
+        // Response saying that the frame has been "pushed".
         return DECODER_FRAME_PUSHED;
 error:
         return DECODER_ERROR;
@@ -565,26 +493,33 @@ error:
 
 static void j2k_decompress_empty_pop(void *state, decompress_status *status, struct video_frame *display_frame, int tile_index) {
         auto s = static_cast<state_decompress_j2k*>(state);
+        
+        // Fetch the log for the decompressed frames queue
         unique_lock<mutex> lk(s->lock);
+        // Check if there is a frame waiting for us
         if (s->decompressed_frames.empty()) {
                 *status = DECODER_NO_FRAME;
                 return;
         }
+        // If there us a frame waiting for us, pop it from the queue and release the lock.
         auto decoded = s->decompressed_frames.front();
         s->decompressed_frames.pop();
         lk.unlock();
 
         size_t linesize = vc_get_linesize(s->desc.width, s->out_codec);
         size_t frame_size = linesize * s->desc.height;
+        // Perform some validation of the frame.
         if ((decoded.second + 3) / 4 * 4 != frame_size) { // for "RGBA with non-standard shift" (search) it would be (frame_size - 1)
                 LOG(LOG_LEVEL_WARNING) << MOD_NAME << "Incorrect decoded size (" << frame_size << " vs. " << decoded.second << ")\n";
         }
-
+        
+        // Copy the decompressed frame into the display frame.
         for (size_t i = 0; i < s->desc.height; ++i) {
                 memcpy(vf_get_tile(display_frame, tile_index)->data + i * s->pitch, decoded.first + i * linesize, min(linesize, decoded.second - min(decoded.second, i * linesize)));
         }
 
         free(decoded.first);
+        // Respond by saying that a tile has been written to the frame.
         *status = DECODER_GOT_FRAME;
 }
 
