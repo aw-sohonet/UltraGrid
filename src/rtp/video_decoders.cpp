@@ -749,7 +749,6 @@ static void *decompress_thread(void *args) {
                 unique_ptr<video_frame> display_frame = nullptr;
 
                 if(!msg->recv_frame) { // poisoned
-                    LOG(LOG_LEVEL_INFO) << "POISONED FRAME\n";
                     break;
                 }
 
