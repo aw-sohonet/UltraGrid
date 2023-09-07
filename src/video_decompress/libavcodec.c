@@ -114,8 +114,7 @@ static void deconfigure(struct state_libavcodec_decompress *s)
                 int ret;
                 ret = avcodec_send_packet(s->codec_ctx, NULL);
                 if (ret != 0) {
-                        log_msg(LOG_LEVEL_WARNING, MOD_NAME "Unexpected return value %d\n",
-                                        ret);
+                        log_msg(LOG_LEVEL_WARNING, MOD_NAME "Unexpected return value %d\n", ret);
                 }
                 do {
                         ret = avcodec_receive_frame(s->codec_ctx, s->frame);
@@ -1170,6 +1169,14 @@ static const struct decode_from_to *libavcodec_decompress_get_decoders() {
         return ret;
 }
 
+static decompress_status libavcodec_decompress_empty_push(void *state, unsigned char *compressed, unsigned int compressed_len, codec_t* internal_codec) {
+    log_msg(LOG_LEVEL_ERROR, "This decompression module does not support asynchronously processing video frames\n");
+}
+
+static void libavcodec_decompress_empty_pop(void *state, decompress_status *status, struct video_frame *display_frame) {
+    log_msg(LOG_LEVEL_ERROR, "This decompression module does not support asynchronously processing video frames\n");
+}
+
 static const struct video_decompress_info libavcodec_info = {
         libavcodec_decompress_init,
         libavcodec_decompress_reconfigure,
@@ -1177,7 +1184,8 @@ static const struct video_decompress_info libavcodec_info = {
         libavcodec_decompress_get_property,
         libavcodec_decompress_done,
         libavcodec_decompress_get_decoders,
+        libavcodec_decompress_empty_push,
+        libavcodec_decompress_empty_pop
 };
 
 REGISTER_MODULE(libavcodec, &libavcodec_info, LIBRARY_CLASS_VIDEO_DECOMPRESS, VIDEO_DECOMPRESS_ABI_VERSION);
-

@@ -438,6 +438,14 @@ static const struct decode_from_to *cineform_decompress_get_decoders() {
         return decoders;
 }
 
+static decompress_status cineform_decompress_empty_push(void *state, unsigned char *compressed, unsigned int compressed_len, codec_t* internal_codec) {
+    log_msg(LOG_LEVEL_ERROR, "This decompression module does not support asynchronously processing video frames\n");
+}
+
+static void cineform_decompressempty_pop(void *state, decompress_status *status, struct video_frame *display_frame) {
+    log_msg(LOG_LEVEL_ERROR, "This decompression module does not support asynchronously processing video frames\n");
+}
+
 static const struct video_decompress_info cineform_info = {
         cineform_decompress_init,
         cineform_decompress_reconfigure,
@@ -445,6 +453,8 @@ static const struct video_decompress_info cineform_info = {
         cineform_decompress_get_property,
         cineform_decompress_done,
         cineform_decompress_get_decoders,
+        cineform_decompress_empty_push,
+        cineform_decompress_empty_pop
 };
 
 REGISTER_MODULE(cineform, &cineform_info, LIBRARY_CLASS_VIDEO_DECOMPRESS, VIDEO_DECOMPRESS_ABI_VERSION);

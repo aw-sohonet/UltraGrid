@@ -67,6 +67,8 @@
 #include "utils/misc.h"
 #include "video.h"
 #include "video_decompress.h"
+#include "utils/synchronized_queue.h"
+#include "utils/thread.h"
 
 #include <cmpto_j2k_dec.h>
 
@@ -108,13 +110,13 @@ struct state_decompress_j2k {
                 unsigned int width, unsigned int height){nullptr};
 };
 
-#define CHECK_OK(cmd, err_msg, action_fail) do { \
+#define CHECK_OK(cmd, err_msg, action_fail) { \
         int j2k_error = cmd; \
         if (j2k_error != CMPTO_OK) {\
                 LOG(LOG_LEVEL_ERROR) << MOD_NAME << (err_msg) << ": " << cmpto_j2k_dec_get_last_error() << "\n"; \
                 action_fail;\
         } \
-} while(0)
+}
 
 #define NOOP ((void) 0)
 
@@ -137,64 +139,68 @@ static void rg48_to_r12l(unsigned char *dst_buffer,
  * This function just runs in thread and gets decompressed images from decoder
  * putting them to queue (or dropping if full).
  */
-static void *decompress_j2k_worker(void *args)
-{
-        struct state_decompress_j2k *s =
-                (struct state_decompress_j2k *) args;
+static void *decompress_j2k_worker(void *args) {
+    set_thread_name(__func__);
+    auto s = (struct state_decompress_j2k *) args;
 
-        while (true) {
-next_image:
-                struct cmpto_j2k_dec_img *img;
-                int decoded_img_status;
-                CHECK_OK(cmpto_j2k_dec_ctx_get_decoded_img(s->decoder, 1, &img, &decoded_img_status),
-				"Decode image", goto next_image);
+    while(true) {
+        // Create an empty pointer on the stack to collect the image data
+        struct cmpto_j2k_dec_img *img;
+        // Collect the status from the J2K sdk on whether we collected the image or not.
+        int decoded_img_status;
+        // Attempt to collect the image from the decoder. If that fails, then loop until it collects it
+        CHECK_OK(cmpto_j2k_dec_ctx_get_decoded_img(s->decoder, 1, &img, &decoded_img_status),
+                 "Decode image", continue);
 
-                {
-                        lock_guard<mutex> lk(s->lock);
-                        if (s->in_frames) s->in_frames--;
-                }
-
-                if (img == NULL) { // decoder stopped (poison pill)
-                        break;
-                }
-
-                if (decoded_img_status != CMPTO_J2K_DEC_IMG_OK) {
-			const char * decoding_error = "";
-			CHECK_OK(cmpto_j2k_dec_img_get_error(img, &decoding_error), "get error status",
-					decoding_error = "(failed)");
-			log_msg(LOG_LEVEL_ERROR, "Image decoding failed: %s\n", decoding_error);
-                        continue;
-                }
-
-                void *dec_data;
-                size_t len;
-                CHECK_OK(cmpto_j2k_dec_img_get_samples(img, &dec_data, &len),
-                                "Error getting samples", cmpto_j2k_dec_img_destroy(img); goto next_image);
-
-                char *buffer = (char *) malloc(len);
-                if (s->convert) {
-                        s->convert((unsigned char*) buffer, (unsigned char*) dec_data, s->desc.width, s->desc.height);
-                        len = vc_get_linesize(s->desc.width, s->out_codec) * s->desc.height;
-                } else {
-                        memcpy(buffer, dec_data, len);
-                }
-
-                CHECK_OK(cmpto_j2k_dec_img_destroy(img),
-                                "Unable to to return processed image", NOOP);
-                lock_guard<mutex> lk(s->lock);
-                while (s->decompressed_frames.size() >= s->max_queue_size) {
-                        if (s->dropped++ % 10 == 0) {
-                                log_msg(LOG_LEVEL_WARNING, "[J2K dec] Some frames (%llu) dropped.\n", s->dropped);
-
-                        }
-                        auto decoded = s->decompressed_frames.front();
-                        s->decompressed_frames.pop();
-                        free(decoded.first);
-                }
-                s->decompressed_frames.push({buffer,len});
+        // If we get this far then we have successfully received the image from the decoder, so we can mark
+        // the frame as having been removed from the decoder.
+        {
+            std::lock_guard<std::mutex> lk(s->lock);
+            if(s->in_frames) s->in_frames--;
         }
 
-        return NULL;
+        // Decoder stopped (poison pill)
+        if(img == nullptr) {
+            break;
+        }
+
+        // Do some error handling if the decoder did not output the image correctly
+        if(decoded_img_status != CMPTO_J2K_DEC_IMG_OK) {
+            // Capture and display the error from J2K sdk
+            const char *decoding_error;
+            CHECK_OK(cmpto_j2k_dec_img_get_error(img, &decoding_error), "get error status",
+                     decoding_error = "(failed)");
+            log_msg(LOG_LEVEL_ERROR, "Image decoding failed: %s\n", decoding_error);
+            continue;
+        }
+
+        void *dec_data;
+        size_t len;
+        // Pull the decoded image data from the J2K sdk. If there is an error destroy the img object and loop again
+        CHECK_OK(cmpto_j2k_dec_img_get_samples(img, &dec_data, &len), "Error getting samples",
+                 cmpto_j2k_dec_img_destroy(img); continue);
+
+        char *buffer = (char *) malloc(len);
+        // If there is a conversion associated with the video format then apply the conversion into the buffer
+        if(s->convert) {
+            // Apply the conversion and then fetch the new length of the data
+            s->convert(reinterpret_cast<unsigned char *>(buffer), (unsigned char *) dec_data,
+                       s->desc.width, s->desc.height);
+            len = vc_get_linesize(s->desc.width, s->out_codec) * s->desc.height;
+        }
+            // Copy the decoded data directly into the buffer
+        else {
+            memcpy(buffer, dec_data, len);
+        }
+
+        // Destroy the img object that was fetched from the J2K sdk
+        CHECK_OK(cmpto_j2k_dec_img_destroy(img), "Unable to to return processed image", NOOP);
+
+        // Push into the queue before fetching the next frame
+        s->decompressed_frames.push({buffer, len});
+    }
+
+    return nullptr;
 }
 
 ADD_TO_PARAM("j2k-dec-mem-limit", "* j2k-dec-mem-limit=<limit>\n"
@@ -462,6 +468,12 @@ static int j2k_decompress_get_property(void *state, int property, void *val, siz
                                 ret = true;
                         }
                         break;
+                case DECOMPRESS_PROPERTY_IS_ASYNC: {
+                    bool* is_async = static_cast<bool*>(val);
+                    *is_async = true;
+                    ret = true;
+                    break;
+                }
                 default:
                         ret = false;
         }
@@ -515,6 +527,67 @@ static const struct decode_from_to *j2k_decompress_get_decoders() {
         return ret;
 }
 
+static decompress_status j2k_decompress_empty_push(void *state, unsigned char *compressed, unsigned int compressed_len, codec_t *internal_codec) {
+        auto s = static_cast<state_decompress_j2k *>(state);
+        struct cmpto_j2k_dec_img *img;
+        pair<char *, size_t> decoded;
+        void *tmp;
+
+        if (s->out_codec == VIDEO_CODEC_NONE) {
+                return j2k_probe_internal_codec(s->desc.color_spec, compressed, compressed_len, internal_codec);
+        }
+
+        if (s->in_frames >= s->max_in_frames + 1) {
+                if (s->dropped++ % 10 == 0) {
+                        log_msg(LOG_LEVEL_WARNING, "[J2K dec] Some frames (%llu) dropped.\n", s->dropped);
+
+                }
+                goto error;
+        }
+
+        CHECK_OK(cmpto_j2k_dec_img_create(s->decoder, &img), "Could not create frame", goto error);
+
+        tmp = malloc(compressed_len);
+        memcpy(tmp, compressed, compressed_len);
+        CHECK_OK(cmpto_j2k_dec_img_set_cstream(img, tmp, compressed_len, &release_cstream),
+                        "Error setting cstream", cmpto_j2k_dec_img_destroy(img); goto error);
+
+        CHECK_OK(cmpto_j2k_dec_img_decode(img, s->settings), "Decode image", cmpto_j2k_dec_img_destroy(img); goto error);
+        {
+                lock_guard<mutex> lk(s->lock);
+                s->in_frames++;
+        }
+
+        return DECODER_FRAME_PUSHED;
+error:
+        return DECODER_ERROR;
+}
+
+static void j2k_decompress_empty_pop(void *state, decompress_status *status, struct video_frame *display_frame, int tile_index) {
+        auto s = static_cast<state_decompress_j2k*>(state);
+        unique_lock<mutex> lk(s->lock);
+        if (s->decompressed_frames.empty()) {
+                *status = DECODER_NO_FRAME;
+                return;
+        }
+        auto decoded = s->decompressed_frames.front();
+        s->decompressed_frames.pop();
+        lk.unlock();
+
+        size_t linesize = vc_get_linesize(s->desc.width, s->out_codec);
+        size_t frame_size = linesize * s->desc.height;
+        if ((decoded.second + 3) / 4 * 4 != frame_size) { // for "RGBA with non-standard shift" (search) it would be (frame_size - 1)
+                LOG(LOG_LEVEL_WARNING) << MOD_NAME << "Incorrect decoded size (" << frame_size << " vs. " << decoded.second << ")\n";
+        }
+
+        for (size_t i = 0; i < s->desc.height; ++i) {
+                memcpy(vf_get_tile(display_frame, tile_index)->data + i * s->pitch, decoded.first + i * linesize, min(linesize, decoded.second - min(decoded.second, i * linesize)));
+        }
+
+        free(decoded.first);
+        *status = DECODER_GOT_FRAME;
+}
+
 static const struct video_decompress_info j2k_decompress_info = {
         j2k_decompress_init,
         j2k_decompress_reconfigure,
@@ -522,6 +595,8 @@ static const struct video_decompress_info j2k_decompress_info = {
         j2k_decompress_get_property,
         j2k_decompress_done,
         j2k_decompress_get_decoders,
+        j2k_decompress_empty_push,
+        j2k_decompress_empty_pop
 };
 
 REGISTER_MODULE(j2k, &j2k_decompress_info, LIBRARY_CLASS_VIDEO_DECOMPRESS, VIDEO_DECOMPRESS_ABI_VERSION);
