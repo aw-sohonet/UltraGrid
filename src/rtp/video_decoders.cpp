@@ -875,92 +875,132 @@ skip_frame:
         return NULL;
 }
 
+/**
+ * A helper function for getting the decoder drop policy from the
+ * command line.
+ */
+static long long get_force_putf_timeout() {
+    auto drop_policy = commandline_params.find("decoder-drop-policy"s);
+    if (drop_policy == commandline_params.end()) {
+        return -1LL;
+    }
+    if (drop_policy->second == "nonblock") {
+        return PUTF_NONBLOCK;
+    }
+    if (drop_policy->second == "blocking") {
+        return PUTF_BLOCKING;
+    }
+    return static_cast<long long>(unit_evaluate_dbl(drop_policy->second.c_str(), true) * NS_IN_SEC);
+}
+
+/**
+ * Collect the display frame from the asynchronous decompression API.
+ */
+static bool async_collect_frame(state_video_decoder* decoder) {
+    // Get the tile count from the existing frame
+    int tile_count = 0;
+    if(decoder->frame) {
+        tile_count = static_cast<int>(decoder->frame->tile_count);
+    }
+
+    // Loop until we the decompression module has written into every tile (or the display thread is shutdown)
+    std::vector<decompress_status> decompress_statuses = std::vector<decompress_status>(tile_count, DECODER_NO_FRAME);
+    while(!std::all_of(decompress_statuses.begin(), decompress_statuses.end(), [](decompress_status status){return status == DECODER_GOT_FRAME;}) && decoder->should_display.load()) {
+        for(int i = 0; i < tile_count; i++) {
+            // Request a decompression is the decompress state is set, and the decoder frame is populated.
+            if(decompress_statuses[i] != DECODER_GOT_FRAME && !decoder->decompress_state.empty() && decoder->decompress_state.at(i) && decoder->frame) {
+                decompress_frame_async_pop(decoder->decompress_state.at(i), &(decompress_statuses[i]), decoder->frame, i);
+            }
+        }
+    }
+
+    // If the display loop is still true then the only way to get to
+    // this code is if we collected a frame.
+    return decoder->should_display.load();
+}
+
+/**
+ * Collect the display frame from the synchronous decompression API.
+ */
+static bool sync_collect_frame(state_video_decoder* decoder) {
+    // Block until we can grab the latest frame to display
+    std::unique_ptr<video_frame> display_frame = decoder->display_queue.pop();
+
+    // If we received a nullptr, then we should treat this as a signal
+    // to break out of the loop.
+    if(!display_frame) {
+        return false;
+    }
+
+    // Copy the display frame into the decoder frame
+    for(int i = 0; i < display_frame->tile_count; i++) {
+        char* source = display_frame->tiles[i].data;
+        char* dest = decoder->frame->tiles[i].data;
+        size_t length = std::min<size_t>(display_frame->tiles[i].data_len, decoder->frame->tiles[i].data_len);
+        memcpy(dest, source, length);
+        // Set all the tile lengths to match the copy
+        decoder->frame->tiles[i].data_len = length;
+    }
+
+    // In order to properly free the frame we need to release it from the unique_ptr
+    video_frame* frame = display_frame.release();
+    vf_free(frame);
+
+    return true;
+}
+
+/**
+ * A helper function to notify other threads that the video frame in the
+ * decoder has been swapped.
+ */
+static void notify_buffer_swapped(state_video_decoder* decoder) {
+    unique_lock<mutex> lk(decoder->lock);
+    // we have put the video frame and requested another one which is
+    // writable so on
+    decoder->buffer_swapped = true;
+    lk.unlock();
+    decoder->buffer_swapped_cv.notify_one();
+}
+
+/**
+ * The display thread. This thread is responsible for collecting the frames from the decompression
+ * API and displaying them. It can either receive from the asynchronous API provided by a decompression
+ * module, or the synchronous API provided from the decompression thread.
+ */
 static void display_thread(void* args) {
     set_thread_name(__func__);
 
     auto decoder = static_cast<state_video_decoder *>(args);
 
-    long long force_putf_timeout = []() {
-        auto drop_policy = commandline_params.find("decoder-drop-policy"s);
-        if (drop_policy == commandline_params.end()) {
-                return -1LL;
-        }
-        if (drop_policy->second == "nonblock") {
-                return PUTF_NONBLOCK;
-        }
-        if (drop_policy->second == "blocking") {
-                return PUTF_BLOCKING;
-        }
-        return static_cast<long long>(unit_evaluate_dbl(drop_policy->second.c_str(), true) * NS_IN_SEC);
-    }();
-
+    // Get the decoder drop policy
+    long long force_putf_timeout = get_force_putf_timeout();
+    long long putf_timeout = force_putf_timeout != -1 ? force_putf_timeout : PUTF_NONBLOCK;
 
     // Find out if the collection needs to be completed asynchronously or not
     bool is_async = decoder_is_async(decoder);
 
     while(decoder->should_display) {
+        bool display_shutdown = false;
+
+        // Collect the frame from either the async collection or the sync collection
         if(is_async) {
-            // Get the tile count from the existing frame
-            int tile_count = 0;
-            if(decoder->frame) {
-                tile_count = decoder->frame->tile_count;;
-            }
-
-            // Loop until we the decompression module has written into every tile (or the display thread is shutdown)
-            std::vector<decompress_status> decompress_statuses = std::vector<decompress_status>(tile_count, DECODER_NO_FRAME);
-            while(!std::all_of(decompress_statuses.begin(), decompress_statuses.end(), [](decompress_status status){return status == DECODER_GOT_FRAME;}) && decoder->should_display.load()) {
-                for(int i = 0; i < tile_count; i++) {
-                    // Request a decompression is the decompress state is set, and the decoder frame is populated.
-                    if(decompress_statuses[i] != DECODER_GOT_FRAME && !decoder->decompress_state.empty() && decoder->decompress_state.at(i) && decoder->frame) {
-                        decompress_frame_async_pop(decoder->decompress_state.at(i), &(decompress_statuses[i]), decoder->frame, i);
-                    }
-                }
-            }
-
-            if(!decoder->should_display.load()) {
-                break;
-            }
+            display_shutdown = !async_collect_frame(decoder);
         }
         else {
-            // Block until we can grab the latest frame to display
-            std::unique_ptr<video_frame> display_frame = decoder->display_queue.pop();
+            display_shutdown = !sync_collect_frame;
+        }
 
-            // If we received a nullptr, then we should treat this as a signal
-            // to break out of the loop.
-            if(!display_frame) {
-                break;
-            }
-
-            // Copy the display frame into the decoder frame
-            for(int i = 0; i < display_frame->tile_count; i++) {
-                char* source = display_frame->tiles[i].data;
-                char* dest = decoder->frame->tiles[i].data;
-                size_t length = std::min<size_t>(display_frame->tiles[i].data_len, decoder->frame->tiles[i].data_len);
-                memcpy(dest, source, length);
-                // Set all the tile lengths to match the copy
-                decoder->frame->tiles[i].data_len = length;
-            }
-
-            // In order to properly free the frame we need to release it from the unique_ptr
-            video_frame* frame = display_frame.release();
-            vf_free(frame);
+        // The collection of the frame has indicated that we should exit.
+        if(display_shutdown) {
+            break;
         }
 
         // Display the frame
-        long long putf_timeout = force_putf_timeout != -1 ? force_putf_timeout : PUTF_NONBLOCK; // originally was BLOCKING when !is_codec_interframe(decoder->received_vid_desc.color_spec)
         int ret = display_put_frame(decoder->display, decoder->frame, putf_timeout);
         
         // Refresh the decoder frame
         decoder->frame = display_get_frame(decoder->display);
-
-        {
-            unique_lock<mutex> lk(decoder->lock);
-            // we have put the video frame and requested another one which is
-            // writable so on
-            decoder->buffer_swapped = true;
-            lk.unlock();
-            decoder->buffer_swapped_cv.notify_one();
-        }
+        notify_buffer_swapped(decoder);
     }
 
     while(decoder->display_queue.size() > 0) {
