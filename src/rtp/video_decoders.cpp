@@ -741,10 +741,10 @@ static void *decompress_thread(void *args) {
                 return static_cast<long long>(unit_evaluate_dbl(drop_policy->second.c_str(), true) * NS_IN_SEC);
         }();
 
-        // Check whether the decoder contains async decompression modules, or synchronous decompression modules.
-        bool is_async = decoder_is_async(decoder);
-
         while(1) {
+                // Check whether the decoder contains async decompression modules, or synchronous decompression modules.
+                bool is_async = decoder_is_async(decoder);
+
                 unique_ptr<frame_msg> msg = decoder->decompress_queue.pop();
                 unique_ptr<video_frame> display_frame = nullptr;
 
@@ -976,18 +976,19 @@ static void display_thread(void* args) {
     long long force_putf_timeout = get_force_putf_timeout();
     long long putf_timeout = force_putf_timeout != -1 ? force_putf_timeout : PUTF_NONBLOCK;
 
-    // Find out if the collection needs to be completed asynchronously or not
-    bool is_async = decoder_is_async(decoder);
 
     while(decoder->should_display) {
         bool display_shutdown = false;
+
+        // Find out if the collection needs to be completed asynchronously or not
+        bool is_async = decoder_is_async(decoder);
 
         // Collect the frame from either the async collection or the sync collection
         if(is_async) {
             display_shutdown = !async_collect_frame(decoder);
         }
         else {
-            display_shutdown = !sync_collect_frame;
+            display_shutdown = !sync_collect_frame(decoder);
         }
 
         // The collection of the frame has indicated that we should exit.
@@ -997,7 +998,7 @@ static void display_thread(void* args) {
 
         // Display the frame
         int ret = display_put_frame(decoder->display, decoder->frame, putf_timeout);
-        
+
         // Refresh the decoder frame
         decoder->frame = display_get_frame(decoder->display);
         notify_buffer_swapped(decoder);
