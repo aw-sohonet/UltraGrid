@@ -1254,7 +1254,6 @@ static void *display_decklink_init(struct module *parent, const char *fmt, unsig
                 }
 
                 BMD_CONFIG_SET(Int, bmdDeckLinkConfigHDMI3DPackingFormat, HDMI3DPacking, goto error);
-                BMD_CONFIG_SET(Int, bmdDeckLinkConfigVideoOutputIdleOperation, bmdIdleVideoOutputLastFrame, BMD_NO_ACTION);
 
                 if (s->sdi_dual_channel_level != BMD_OPT_DEFAULT) {
                         if (deckLinkAttributes) {
