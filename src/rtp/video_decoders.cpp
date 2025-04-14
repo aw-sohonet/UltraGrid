@@ -903,9 +903,25 @@ static bool async_collect_frame(state_video_decoder* decoder) {
         tile_count = static_cast<int>(decoder->frame->tile_count);
     }
 
+    short logCount = 0;
+
     // Loop until we the decompression module has written into every tile (or the display thread is shutdown)
     std::vector<decompress_status> decompress_statuses = std::vector<decompress_status>(tile_count, DECODER_NO_FRAME);
     while(!std::all_of(decompress_statuses.begin(), decompress_statuses.end(), [](decompress_status status){return status == DECODER_GOT_FRAME;}) && decoder->should_display.load()) {
+        if(logCount++ % 20 == 0) {
+            std::stringstream tileStatus;
+            tileStatus << "[";
+            for(decompress_status status : decompress_statuses) {
+                if(status == DECODER_GOT_FRAME)
+                    tileStatus << "DECODER_GOT_FRAME, ";
+                if(status == DECODER_NO_FRAME)
+                    tileStatus << "DECODER_NO_FRAME, ";
+            }
+            tileStatus << "]";
+            LOG(LOG_LEVEL_DEBUG) << MOD_NAME << "Waiting to collect frame - Tile Count: " << tile_count  << ". Statuses: " << tileStatus.str();
+            logCount = 0;
+        }
+
         for(int i = 0; i < tile_count; i++) {
             // Request a decompression is the decompress state is set, and the decoder frame is populated.
             if(decompress_statuses[i] != DECODER_GOT_FRAME && !decoder->decompress_state.empty() && decoder->decompress_state.at(i) && decoder->frame) {
@@ -969,6 +985,7 @@ static void notify_buffer_swapped(state_video_decoder* decoder) {
  */
 static void display_thread(void* args) {
     set_thread_name(__func__);
+    LOG(LOG_LEVEL_INFO) << MOD_NAME << "Display thread started.";
 
     auto decoder = static_cast<state_video_decoder *>(args);
 
@@ -976,8 +993,9 @@ static void display_thread(void* args) {
     long long force_putf_timeout = get_force_putf_timeout();
     long long putf_timeout = force_putf_timeout != -1 ? force_putf_timeout : PUTF_NONBLOCK;
 
+    short logCount = 0;
 
-    while(decoder->should_display) {
+    while(decoder->should_display.load()) {
         bool display_shutdown = false;
 
         // Find out if the collection needs to be completed asynchronously or not
@@ -993,6 +1011,7 @@ static void display_thread(void* args) {
 
         // The collection of the frame has indicated that we should exit.
         if(display_shutdown) {
+            LOG(LOG_LEVEL_DEBUG) << MOD_NAME << "Display thread has been poisoned.";
             break;
         }
 
@@ -1002,8 +1021,14 @@ static void display_thread(void* args) {
         // Refresh the decoder frame
         decoder->frame = display_get_frame(decoder->display);
         notify_buffer_swapped(decoder);
+
+        if(logCount++ % 100 == 0) {
+            LOG(LOG_LEVEL_DEBUG) << MOD_NAME << "Display thread is currently running";
+            logCount = 0;
+        }
     }
 
+    LOG(LOG_LEVEL_INFO) << MOD_NAME << "Display thread shutting down";
     while(decoder->display_queue.size() > 0) {
         // Block until we can grab the latest frame to display
         std::unique_ptr<video_frame> display_frame = decoder->display_queue.pop();
@@ -1012,6 +1037,7 @@ static void display_thread(void* args) {
         video_frame* frame = display_frame.release();
         vf_free(frame);
     }
+    LOG(LOG_LEVEL_INFO) << MOD_NAME << "Display thread exiting";
 }
 
 static void decoder_set_video_mode(struct state_video_decoder *decoder, enum video_mode video_mode)
