@@ -908,7 +908,7 @@ static bool async_collect_frame(state_video_decoder* decoder) {
     // Loop until we the decompression module has written into every tile (or the display thread is shutdown)
     std::vector<decompress_status> decompress_statuses = std::vector<decompress_status>(tile_count, DECODER_NO_FRAME);
     while(!std::all_of(decompress_statuses.begin(), decompress_statuses.end(), [](decompress_status status){return status == DECODER_GOT_FRAME;}) && decoder->should_display.load()) {
-        if(logCount++ % 20 == 0) {
+        if(logCount++ % 10000 == 0) {
             std::stringstream tileStatus;
             tileStatus << "[";
             for(decompress_status status : decompress_statuses) {
@@ -1022,7 +1022,7 @@ static void display_thread(void* args) {
         decoder->frame = display_get_frame(decoder->display);
         notify_buffer_swapped(decoder);
 
-        if(logCount++ % 100 == 0) {
+        if(logCount++ % 10000 == 0) {
             LOG(LOG_LEVEL_DEBUG) << MOD_NAME << "Display thread is currently running\n";
             logCount = 0;
         }
