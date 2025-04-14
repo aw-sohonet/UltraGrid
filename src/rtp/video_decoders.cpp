@@ -903,12 +903,12 @@ static bool async_collect_frame(state_video_decoder* decoder) {
         tile_count = static_cast<int>(decoder->frame->tile_count);
     }
 
-    short logCount = 0;
+    std::chrono::time_point logTimer = std::chrono::high_resolution_clock::now();
 
     // Loop until we the decompression module has written into every tile (or the display thread is shutdown)
     std::vector<decompress_status> decompress_statuses = std::vector<decompress_status>(tile_count, DECODER_NO_FRAME);
     while(!std::all_of(decompress_statuses.begin(), decompress_statuses.end(), [](decompress_status status){return status == DECODER_GOT_FRAME;}) && decoder->should_display.load()) {
-        if(logCount++ % 10000 == 0) {
+        if(std::chrono::duration_cast<std::chrono::seconds>(logTimer - std::chrono::high_resolution_clock::now()) >  5) {
             std::stringstream tileStatus;
             tileStatus << "[";
             for(decompress_status status : decompress_statuses) {
@@ -919,7 +919,7 @@ static bool async_collect_frame(state_video_decoder* decoder) {
             }
             tileStatus << "]";
             LOG(LOG_LEVEL_DEBUG) << MOD_NAME << "Waiting to collect frame - Tile Count: " << tile_count  << ". Statuses: " << tileStatus.str() << "\n";
-            logCount = 0;
+            logTimer = std::chrono::high_resolution_clock::now();
         }
 
         for(int i = 0; i < tile_count; i++) {
@@ -993,7 +993,7 @@ static void display_thread(void* args) {
     long long force_putf_timeout = get_force_putf_timeout();
     long long putf_timeout = force_putf_timeout != -1 ? force_putf_timeout : PUTF_NONBLOCK;
 
-    short logCount = 0;
+    std::chrono::time_point logTimer = std::chrono::high_resolution_clock::now();
 
     while(decoder->should_display.load()) {
         bool display_shutdown = false;
@@ -1022,9 +1022,9 @@ static void display_thread(void* args) {
         decoder->frame = display_get_frame(decoder->display);
         notify_buffer_swapped(decoder);
 
-        if(logCount++ % 10000 == 0) {
+        if(std::chrono::duration_cast<std::chrono::seconds>(logTimer - std::chrono::high_resolution_clock::now()) >  5) {
             LOG(LOG_LEVEL_DEBUG) << MOD_NAME << "Display thread is currently running\n";
-            logCount = 0;
+            logTimer = std::chrono::high_resolution_clock::now();
         }
     }
 
