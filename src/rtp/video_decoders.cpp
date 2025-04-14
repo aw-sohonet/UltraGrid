@@ -918,7 +918,7 @@ static bool async_collect_frame(state_video_decoder* decoder) {
                     tileStatus << "DECODER_NO_FRAME, ";
             }
             tileStatus << "]";
-            LOG(LOG_LEVEL_DEBUG) << MOD_NAME << "Waiting to collect frame - Tile Count: " << tile_count  << ". Statuses: " << tileStatus.str();
+            LOG(LOG_LEVEL_DEBUG) << MOD_NAME << "Waiting to collect frame - Tile Count: " << tile_count  << ". Statuses: " << tileStatus.str() << "\n";
             logCount = 0;
         }
 
@@ -985,7 +985,7 @@ static void notify_buffer_swapped(state_video_decoder* decoder) {
  */
 static void display_thread(void* args) {
     set_thread_name(__func__);
-    LOG(LOG_LEVEL_INFO) << MOD_NAME << "Display thread started.";
+    LOG(LOG_LEVEL_INFO) << MOD_NAME << "Display thread started.\n";
 
     auto decoder = static_cast<state_video_decoder *>(args);
 
@@ -1011,7 +1011,7 @@ static void display_thread(void* args) {
 
         // The collection of the frame has indicated that we should exit.
         if(display_shutdown) {
-            LOG(LOG_LEVEL_DEBUG) << MOD_NAME << "Display thread has been poisoned.";
+            LOG(LOG_LEVEL_DEBUG) << MOD_NAME << "Display thread has been poisoned.\n";
             break;
         }
 
@@ -1023,12 +1023,12 @@ static void display_thread(void* args) {
         notify_buffer_swapped(decoder);
 
         if(logCount++ % 100 == 0) {
-            LOG(LOG_LEVEL_DEBUG) << MOD_NAME << "Display thread is currently running";
+            LOG(LOG_LEVEL_DEBUG) << MOD_NAME << "Display thread is currently running\n";
             logCount = 0;
         }
     }
 
-    LOG(LOG_LEVEL_INFO) << MOD_NAME << "Display thread shutting down";
+    LOG(LOG_LEVEL_INFO) << MOD_NAME << "Display thread shutting down\n";
     while(decoder->display_queue.size() > 0) {
         // Block until we can grab the latest frame to display
         std::unique_ptr<video_frame> display_frame = decoder->display_queue.pop();
@@ -1037,7 +1037,7 @@ static void display_thread(void* args) {
         video_frame* frame = display_frame.release();
         vf_free(frame);
     }
-    LOG(LOG_LEVEL_INFO) << MOD_NAME << "Display thread exiting";
+    LOG(LOG_LEVEL_INFO) << MOD_NAME << "Display thread exiting\n";
 }
 
 static void decoder_set_video_mode(struct state_video_decoder *decoder, enum video_mode video_mode)
