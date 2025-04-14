@@ -13,6 +13,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <list>
+#include <optional>
 #include <mutex>
 #include <limits>
 #include <vector>
