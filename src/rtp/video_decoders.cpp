@@ -2348,6 +2348,7 @@ bool decode_video_frame(std::unique_ptr<BufferFrame> bufferFrame, vcodec_state* 
         }
     }
 
+    LOG(LOG_LEVEL_INFO) << "Placing frame into packet reconstruction\n";
     threadPool.Start();
     for(UIntPair block : packetBlocks) {
         // Use lambda to construct function to pass into thread
@@ -2363,6 +2364,7 @@ bool decode_video_frame(std::unique_ptr<BufferFrame> bufferFrame, vcodec_state* 
     // Wait for the thread pool to finish executing, and then shut down the threads
     while(threadPool.Busy());
     threadPool.Stop();
+    LOG(LOG_LEVEL_INFO) << "Successfully reconstructed frame\n";
 
     if (FRAMEBUFFER_NOT_READY(decoder) && (packetType == PT_VIDEO || packetType == PT_ENCRYPT_VIDEO)) {
         LOG(LOG_LEVEL_INFO) << "Frame buffer not ready\n";
