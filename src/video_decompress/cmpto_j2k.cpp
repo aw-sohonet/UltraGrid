@@ -136,6 +136,7 @@ static void *decompress_j2k_worker(void *args) {
         // Attempt to collect the image from the decoder. If that fails, then loop until it collects it
         CHECK_OK(cmpto_j2k_dec_ctx_get_decoded_img(s->decoder, 1, &img, &decoded_img_status),
                  "Decode image", continue);
+        LOG(LOG_LEVEL_INFO) << "Worker collected frame: " << s->in_frames << "\n";
 
         // If we get this far then we have successfully received the image from the decoder, so we can mark
         // the frame as having been removed from the decoder.

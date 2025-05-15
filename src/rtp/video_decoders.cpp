@@ -2411,6 +2411,9 @@ bool decode_video_frame(std::unique_ptr<BufferFrame> bufferFrame, vcodec_state* 
 
         auto t0 = std::chrono::high_resolution_clock::now();
         decoder->fec_queue.push(std::move(fec_msg));
+        if(decoder->fec_queue.size() > 10) {
+            LOG(LOG_LEVEL_INFO) << "More than 10 items in fec queue: " << decoder->fec_queue.size() << "\n";
+        }
         auto t1 = std::chrono::high_resolution_clock::now();
         double tpf = 1.0 / decoder->display_desc.fps;
         if (std::chrono::duration_cast<std::chrono::duration<double>>(t1 - t0).count() > tpf && decoder->stats.displayed > 20) {
