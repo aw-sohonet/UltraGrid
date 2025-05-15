@@ -2348,7 +2348,6 @@ bool decode_video_frame(std::unique_ptr<BufferFrame> bufferFrame, vcodec_state* 
         }
     }
 
-    LOG(LOG_LEVEL_INFO) << "Placing frame into packet reconstruction\n";
     threadPool.Start();
     for(UIntPair block : packetBlocks) {
         // Use lambda to construct function to pass into thread
@@ -2364,7 +2363,6 @@ bool decode_video_frame(std::unique_ptr<BufferFrame> bufferFrame, vcodec_state* 
     // Wait for the thread pool to finish executing, and then shut down the threads
     while(threadPool.Busy());
     threadPool.Stop();
-    LOG(LOG_LEVEL_INFO) << "Successfully reconstructed frame\n";
 
     if (FRAMEBUFFER_NOT_READY(decoder) && (packetType == PT_VIDEO || packetType == PT_ENCRYPT_VIDEO)) {
         LOG(LOG_LEVEL_INFO) << "Frame buffer not ready\n";
@@ -2413,9 +2411,6 @@ bool decode_video_frame(std::unique_ptr<BufferFrame> bufferFrame, vcodec_state* 
 
         auto t0 = std::chrono::high_resolution_clock::now();
         decoder->fec_queue.push(std::move(fec_msg));
-        if(decoder->fec_queue.size() > 10) {
-            LOG(LOG_LEVEL_INFO) << "More than 10 items in fec queue: " << decoder->fec_queue.size() << "\n";
-        }
         auto t1 = std::chrono::high_resolution_clock::now();
         double tpf = 1.0 / decoder->display_desc.fps;
         if (std::chrono::duration_cast<std::chrono::duration<double>>(t1 - t0).count() > tpf && decoder->stats.displayed > 20) {

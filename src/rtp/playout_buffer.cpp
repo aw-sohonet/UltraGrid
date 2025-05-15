@@ -109,12 +109,10 @@ std::unique_ptr<BufferFrame> PlayoutBuffer::popNextDisplayReadyFrame() {
             // Derefeference the iterator and move the frame before erasing it from the frame list
             frame = std::move(*firstDisplayReadyFrameIt);
             this->frames.erase(firstDisplayReadyFrameIt);
-            LOG(LOG_LEVEL_INFO) << "Found a ready frame\n";
         }
         else {
             // Create a null pointer and hand this back to represent there are not more ready frames
             frame = std::unique_ptr<BufferFrame>(nullptr);
-            LOG(LOG_LEVEL_INFO) << "No ready frame\n";
         }
     }
     // Return the popped frame
