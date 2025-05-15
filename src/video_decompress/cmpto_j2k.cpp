@@ -186,7 +186,7 @@ static void *decompress_j2k_worker(void *args) {
         // Push into the queue before fetching the next frame
         unique_lock<mutex> lk(s->collect_lock);
         s->decompressed_frames.push({buffer, len});
-        lk.unlock()
+        lk.unlock();
         if(s->decompressed_frames.size() > 5) {
             LOG(LOG_LEVEL_INFO) << "Frames are not being collected: " << s->decompressed_frames.size() << "\n";
         }

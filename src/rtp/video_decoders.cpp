@@ -925,7 +925,9 @@ static bool async_collect_frame(state_video_decoder* decoder) {
         for(int i = 0; i < tile_count; i++) {
             // Request a decompression is the decompress state is set, and the decoder frame is populated.
             if(decompress_statuses[i] != DECODER_GOT_FRAME && !decoder->decompress_state.empty() && decoder->decompress_state.at(i) && decoder->frame) {
+                LOG(LOG_LEVEL_INFO) << MOD_NAME << "Display thread popping frame: " << i << "\n";
                 decompress_frame_async_pop(decoder->decompress_state.at(i), &(decompress_statuses[i]), decoder->frame, i);
+                LOG(LOG_LEVEL_INFO) << MOD_NAME << "Display thread popped frame: " << i << "\n";
             }
         }
     }
@@ -1003,6 +1005,7 @@ static void display_thread(void* args) {
 
         // Collect the frame from either the async collection or the sync collection
         if(is_async) {
+            LOG(LOG_LEVEL_INFO) << MOD_NAME << "Display thread collecting frame async\n";
             display_shutdown = !async_collect_frame(decoder);
         }
         else {
@@ -1016,10 +1019,14 @@ static void display_thread(void* args) {
         }
 
         // Display the frame
+        LOG(LOG_LEVEL_INFO) << MOD_NAME << "Display thread placing frame into Decklink\n";
         int ret = display_put_frame(decoder->display, decoder->frame, putf_timeout);
+        LOG(LOG_LEVEL_INFO) << MOD_NAME << "Display thread placed frame into Decklink\n";
 
         // Refresh the decoder frame
+        LOG(LOG_LEVEL_INFO) << MOD_NAME << "Display thread refreshing decoder frame\n";
         decoder->frame = display_get_frame(decoder->display);
+        LOG(LOG_LEVEL_INFO) << MOD_NAME << "Display thread notifying buffer swap\n";
         notify_buffer_swapped(decoder);
 
         if(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::high_resolution_clock::now() - logTimer).count() >  5) {
