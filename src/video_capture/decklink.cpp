@@ -211,6 +211,7 @@ public:
         uint32_t                      timecode{};
         struct vidcap_decklink_state *s;
         struct device_state          &device;
+        bool                         noSignalFlag{false};
 	
         VideoDelegate(struct vidcap_decklink_state *state, struct device_state &device_) : s(state), device(device_) {
         }
@@ -352,15 +353,27 @@ VideoDelegate::VideoInputFrameArrived (IDeckLinkVideoInputFrame *videoFrame, IDe
 	// Video
 	if (videoFrame)
 	{
-                if (videoFrame->GetFlags() & bmdFrameHasNoInputSource) {
-                        nosig = true;
-			log_msg(LOG_LEVEL_INFO, "Frame received (#%d) - No input signal detected\n", s->frames);
-                        if (s->nosig_send) {
-                                newFrameReady = 1;
-                        }
-		} else {
-                        newFrameReady = 1; // The new frame is ready to grab
-			// printf("Frame received (#%lu) - Valid Frame (Size: %li bytes)\n", framecount, videoFrame->GetRowBytes() * videoFrame->GetHeight());
+        if (videoFrame->GetFlags() & bmdFrameHasNoInputSource) {
+                nosig = true;
+
+                // If we have not seen the noSignalFlag yet then print out
+                if (!this->noSignalFlag) {
+                    log_msg(LOG_LEVEL_INFO, "Frame received (#%d) - No input signal detected\n", s->frames);
+                    this->noSignalFlag = true;
+                }
+
+                if (s->nosig_send) {
+                        newFrameReady = 1;
+                }
+        }
+        else {
+            // If this is true then we previously were not detecting frames.
+            if(this->noSignalFlag) {
+                log_msg(LOG_LEVEL_INFO, "Frame received (#%d) - Input signal detected\n", s->frames);
+                this->noSignalFlag = false; // Switch our flag back to signal we have
+                                            // successfully got a frame from the Decklink card.
+            }
+            newFrameReady = 1; // The new frame is ready to grab
 		}
 	}
 
@@ -1515,14 +1528,14 @@ static audio_frame *process_new_audio_packets(struct vidcap_decklink_state *s) {
                                 demux_channel(s->audio.data + s->audio.data_len, static_cast<char *>(audioFrame), s->audio.bps, min<int64_t>(audioPacket->GetSampleFrameCount() * 2 /* channels */ * s->audio.bps, INT_MAX), 2 /* channels (originally) */, 0 /* we want first channel */);
                                 s->audio.data_len = min<int64_t>(s->audio.data_len + audioPacket->GetSampleFrameCount() * 1 * s->audio.bps, INT_MAX);
                         } else {
-                                LOG(LOG_LEVEL_WARNING) << "[DeckLink] Audio frame too small!\n";
+                                LOG(LOG_LEVEL_DEBUG) << "[DeckLink] Audio frame too small!\n";
                         }
                 } else {
                         if (s->audio.data_len + audioPacket->GetSampleFrameCount() * s->audio.ch_count * s->audio.bps <= s->audio.max_size) {
                                 memcpy(s->audio.data + s->audio.data_len, audioFrame, audioPacket->GetSampleFrameCount() * s->audio.ch_count * s->audio.bps);
                                 s->audio.data_len = min<int64_t>(s->audio.data_len + audioPacket->GetSampleFrameCount() * s->audio.ch_count * s->audio.bps, INT_MAX);
                         } else {
-                                LOG(LOG_LEVEL_WARNING) << "[DeckLink] Audio frame too small!\n";
+                                LOG(LOG_LEVEL_DEBUG) << "[DeckLink] Audio frame too small!\n";
                         }
                 }
                 audioPacket->Release();
