@@ -82,6 +82,7 @@ struct state_decompress_j2k {
         codec_t out_codec{};
 
         mutex lock;
+        mutex collect_lock;
         queue<pair<char *, size_t>> decompressed_frames; ///< buffer, length
         int pitch;
         pthread_t thread_id{};
@@ -136,6 +137,7 @@ static void *decompress_j2k_worker(void *args) {
         // Attempt to collect the image from the decoder. If that fails, then loop until it collects it
         CHECK_OK(cmpto_j2k_dec_ctx_get_decoded_img(s->decoder, 1, &img, &decoded_img_status),
                  "Decode image", continue);
+        LOG(LOG_LEVEL_INFO) << "Worker collected frame: " << s->in_frames << "\n";
 
         // If we get this far then we have successfully received the image from the decoder, so we can mark
         // the frame as having been removed from the decoder.
@@ -182,7 +184,12 @@ static void *decompress_j2k_worker(void *args) {
         CHECK_OK(cmpto_j2k_dec_img_destroy(img), "Unable to to return processed image", NOOP);
 
         // Push into the queue before fetching the next frame
+        unique_lock<mutex> lk(s->collect_lock);
         s->decompressed_frames.push({buffer, len});
+        lk.unlock();
+        if(s->decompressed_frames.size() > 5) {
+            LOG(LOG_LEVEL_INFO) << "Frames are not being collected: " << s->decompressed_frames.size() << "\n";
+        }
     }
 
     return nullptr;
@@ -494,8 +501,8 @@ error:
 static void j2k_decompress_empty_pop(void *state, decompress_status *status, struct video_frame *display_frame, int tile_index) {
         auto s = static_cast<state_decompress_j2k*>(state);
         
-        // Fetch the log for the decompressed frames queue
-        unique_lock<mutex> lk(s->lock);
+        // Fetch the lock for the decompressed frames queue
+        unique_lock<mutex> lk(s->collect_lock);
         // Check if there is a frame waiting for us
         if (s->decompressed_frames.empty()) {
                 *status = DECODER_NO_FRAME;

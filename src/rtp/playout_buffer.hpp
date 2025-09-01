@@ -14,6 +14,7 @@
 #include <condition_variable>
 #include <optional>
 #include <list>
+#include <optional>
 #include <mutex>
 #include <limits>
 #include <vector>

@@ -605,7 +605,7 @@ static int display_decklink_putf(void *state, struct video_frame *frame, long lo
 
         uint32_t i;
         s->state.at(0).deckLinkOutput->GetBufferedVideoFrameCount(&i);
-        LOG(LOG_LEVEL_DEBUG) << MOD_NAME "putf - " << i << " frames buffered\n";
+        LOG(LOG_LEVEL_INFO) << MOD_NAME "putf - " << i << " frames buffered\n";
         long long max_frames = DIV_ROUNDED_UP(timeout_ns, (long long)(NS_IN_SEC / frame->fps));
         if (timeout_ns == PUTF_DISCARD || i > max_frames) {
                 if (timeout_ns != PUTF_DISCARD) {
@@ -619,6 +619,7 @@ static int display_decklink_putf(void *state, struct video_frame *frame, long lo
                 frame->callbacks.dispose(frame);
                 return 1;
         }
+        LOG(LOG_LEVEL_INFO) << MOD_NAME "putf - r10k full\n";
 
         if (frame->color_spec == R10k && get_commandline_param(R10K_FULL_OPT) == nullptr) {
                 for (unsigned i = 0; i < frame->tile_count; ++i) {
@@ -626,6 +627,7 @@ static int display_decklink_putf(void *state, struct video_frame *frame, long lo
                 }
         }
 
+        LOG(LOG_LEVEL_INFO) << MOD_NAME "putf - scheduling output\n";
         for (int j = 0; j < s->devices_cnt; ++j) {
                 IDeckLinkMutableVideoFrame *deckLinkFrame =
                         (*((vector<IDeckLinkMutableVideoFrame *> *) frame->callbacks.dispose_udata))[j];
@@ -655,6 +657,7 @@ static int display_decklink_putf(void *state, struct video_frame *frame, long lo
                                 << s->state.at(0).delegate->frames_flushed << " flushed cumulative\n";
                 s->t0 = now;
         }
+        LOG(LOG_LEVEL_INFO) << MOD_NAME "putf - exit\n";
 
         return 0;
 }
