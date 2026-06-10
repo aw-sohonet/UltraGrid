@@ -240,19 +240,10 @@ static int vidcap_testcard2_init(struct vidcap_params *params, void **state)
         s->play_audio_frame = FALSE;
 
         platform_sem_init(&s->semaphore, 0, 0);
-        printf("Testcard capture set to %dx%d\n", s->desc.width, s->desc.height);
+        log_msg(LOG_LEVEL_INFO, MOD_NAME "capture set to %dx%d @%.2gp, codec %s, bpc %d, pattern: %s, audio %s\n",
+                s->desc.width, s->desc.height, s->desc.fps, get_codec_name(s->desc.color_spec),
+                get_bits_per_component(s->desc.color_spec), "bars", s->grab_audio ? "on" : "off");
 
-        if(vidcap_params_get_flags(params) & VIDCAP_FLAG_AUDIO_EMBEDDED) {
-                s->grab_audio = TRUE;
-                if(configure_audio(s) != 0) {
-                        s->grab_audio = FALSE;
-                        fprintf(stderr, "[testcard] Disabling audio output. "
-                                        "SDL-mixer missing, running on Mac or other problem.");
-                }
-        } else {
-                s->grab_audio = FALSE;
-        }
-        
         if(!s->grab_audio) {
                 s->audio_tone = NULL;
                 s->audio_silence = NULL;
