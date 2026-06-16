@@ -12,6 +12,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <optional>
 #include <list>
 #include <mutex>
 #include <limits>
