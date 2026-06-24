@@ -375,6 +375,14 @@ static const struct decode_from_to *gpujpeg_to_dxt_decompress_get_decoders() {
         return ret;
 }
 
+static decompress_status gpujpeg_to_dxt_decompress_empty_push(void *state, unsigned char *compressed, unsigned int compressed_len, codec_t* internal_codec) {
+    log_msg(LOG_LEVEL_ERROR, "This decompression module does not support asynchronously processing video frames\n");
+}
+
+static void gpujpeg_to_dxt_decompress_empty_pop(void *state, decompress_status *status, struct video_frame *display_frame) {
+    log_msg(LOG_LEVEL_ERROR, "This decompression module does not support asynchronously processing video frames\n");
+}
+
 static const struct video_decompress_info gpujpeg_to_dxt_info = {
         gpujpeg_to_dxt_decompress_init,
         gpujpeg_to_dxt_decompress_reconfigure,
@@ -382,6 +390,8 @@ static const struct video_decompress_info gpujpeg_to_dxt_info = {
         gpujpeg_to_dxt_decompress_get_property,
         gpujpeg_to_dxt_decompress_done,
         gpujpeg_to_dxt_decompress_get_decoders,
+        gpujpeg_to_dxt_decompress_empty_push,
+        gpujpeg_to_dxt_decompress_empty_pop
 };
 
 REGISTER_MODULE(gpujpeg_to_dxt, &gpujpeg_to_dxt_info, LIBRARY_CLASS_VIDEO_DECOMPRESS, VIDEO_DECOMPRESS_ABI_VERSION);

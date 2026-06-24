@@ -77,7 +77,7 @@ ADD_TO_PARAM("decompress", "* decompress=<name>[:<codec>]\n"
  */
 static int find_best_decompress(codec_t in_codec, codec_t internal, codec_t out_codec,
                 int prio_min, int prio_max, const struct video_decompress_info **vdi, string & name) {
-        auto decomps = get_libraries_for_class(LIBRARY_CLASS_VIDEO_DECOMPRESS, VIDEO_DECOMPRESS_ABI_VERSION);
+        auto decomps = get_libraries_for_class(LIBRARY_CLASS_VIDEO_DECOMPRESS, VIDEO_DECOMPRESS_ABI_VERSION, true);
 
         int best_priority = prio_max + 1;
         string force_module;
@@ -245,10 +245,37 @@ decompress_status decompress_frame(
                         internal_codec);
 }
 
+/** @copydoc decompress_async_push_t */
+decompress_status decompress_frame_async_push(
+                struct state_decompress *s,
+                unsigned char *compressed,
+                unsigned int compressed_len,
+                codec_t *internal_codec)
+{
+        assert(s->magic == DECOMPRESS_MAGIC);
+
+        return s->functions->push(s->state,
+                                  compressed,
+                                  compressed_len,
+                                  internal_codec);
+}
+
+/** @copydoc decompress_async_pop_t */
+void decompress_frame_async_pop(
+                    struct state_decompress* s,
+                    decompress_status *status,
+                    struct video_frame *display_frame,
+                    int tile_index) {
+    s->functions->pop(s->state,
+                      status,
+                      display_frame,
+                      tile_index);
+}
+
 /** @copydoc decompress_get_property_t */
 int decompress_get_property(struct state_decompress *s, int property, void *val, size_t *len)
 {
-        return s->functions->get_property(s->state, property, val, len);
+    return s->functions->get_property(s->state, property, val, len);
 }
 
 /** @copydoc decompress_done_t */

@@ -243,6 +243,14 @@ static const struct decode_from_to *dxt_glsl_decompress_get_decoders() {
         return ret;
 }
 
+static decompress_status dxt_glsl_decompress_empty_push(void *state, unsigned char *compressed, unsigned int compressed_len, codec_t* internal_codec) {
+    log_msg(LOG_LEVEL_ERROR, "This decompression module does not support asynchronously processing video frames\n");
+}
+
+static void dxt_glsl_decompress_empty_pop(void *state, decompress_status *status, struct video_frame *display_frame) {
+    log_msg(LOG_LEVEL_ERROR, "This decompression module does not support asynchronously processing video frames\n");
+}
+
 static const struct video_decompress_info dxt_glsl_info = {
         dxt_glsl_decompress_init,
         dxt_glsl_decompress_reconfigure,
@@ -250,6 +258,8 @@ static const struct video_decompress_info dxt_glsl_info = {
         dxt_glsl_decompress_get_property,
         dxt_glsl_decompress_done,
         dxt_glsl_decompress_get_decoders,
+        dxt_glsl_decompress_empty_push,
+        dxt_glsl_decompress_empty_pop
 };
 
 REGISTER_MODULE(dxt_glsl, &dxt_glsl_info, LIBRARY_CLASS_VIDEO_DECOMPRESS, VIDEO_DECOMPRESS_ABI_VERSION);

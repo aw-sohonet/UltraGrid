@@ -61,6 +61,7 @@ struct state_decompress;
  * can be passed to decompressor. Otherwise, broken frame is discarded.
  */
 #define DECOMPRESS_PROPERTY_ACCEPTS_CORRUPTED_FRAME  1          /* int */
+#define DECOMPRESS_PROPERTY_IS_ASYNC  2                         /* bool */
 
 /**
  * initializes decompression and returns internal state
@@ -85,7 +86,9 @@ typedef enum {
         DECODER_NO_FRAME = 0, //Frame not decoded yet 
         DECODER_GOT_FRAME,    //Frame decoded and written to destination
         DECODER_GOT_CODEC,    ///< Internal pixel format was determined
-        DECODER_CANT_DECODE   //Decoder can't decode to selected out_codec
+        DECODER_CANT_DECODE,  //Decoder can't decode to selected out_codec
+        DECODER_FRAME_PUSHED,  //The frame has been asynchronously pushed
+        DECODER_ERROR
 } decompress_status;
 
 /**
@@ -135,6 +138,22 @@ typedef  int (*decompress_get_property_t)(void *state, int property, void *val, 
 typedef  void (*decompress_done_t)(void *);
 
 /**
+ * Decompress Async push
+ * @param state Decoder state
+ * @param compressed A pointer to the compressed data
+ * @param compressed_len The length of the compressed data
+*/
+typedef decompress_status (*decompress_async_push_t)(void *state, unsigned char *compressed, unsigned int compressed_len, codec_t* internal_codec);
+
+/**
+ * Decompress Async pop
+ * @param state Decoder state
+ * @param status The decompression status
+ * @param video_frame The frame to write the decompressed items into
+*/
+typedef void (*decompress_async_pop_t)(void *state, decompress_status *status, struct video_frame *display_frame, int tile_index);
+
+/**
  * Struct of this type defines decompressor for codec to specified output codec.
  *
  * Internal codec indicates interal codec color space, subsampling and channel count
@@ -166,6 +185,8 @@ struct video_decompress_info {
         decompress_get_property_t get_property;
         decompress_done_t done;
         decompress_get_available_decoders_t get_available_decoders;
+        decompress_async_push_t push;
+        decompress_async_pop_t pop;
 };
 
 bool decompress_init_multi(codec_t from,
@@ -195,6 +216,22 @@ decompress_status decompress_frame(struct state_decompress *,
                 int frame_seq,
                 struct video_frame_callbacks *callbacks,
                 codec_t *internal_codec);
+
+/**
+ * @param internal_codec must not be nullptr if reconfigured with
+ *                       out_codec == VIDEO_CODEC_NONE. Its value
+ *                       is valid only if returned DECODER_GOT_CODEC.
+*/
+decompress_status decompress_frame_async_push(
+                struct state_decompress *s,
+                unsigned char *compressed,
+                unsigned int compressed_len,
+                codec_t *internal_codec);
+
+void decompress_frame_async_pop(struct state_decompress* s,
+                                decompress_status *status,
+                                struct video_frame *display_frame,
+                                int tile_index);
 
 int decompress_get_property(struct state_decompress *state,
                 int property,
